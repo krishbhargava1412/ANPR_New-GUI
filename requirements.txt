@@ -1,5 +1,7 @@
 PyQt6>=6.6.0
 opencv-python>=4.8.0
 numpy>=1.24.0
-pytesseract>=0.3.10
-ultralyticsplus>=0.0.28
+Pillow>=10.0.0
+easyocr>=1.7.0
+torch>=2.5.0
+ultralytics>=8.0.114

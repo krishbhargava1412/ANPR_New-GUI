@@ -1,3 +1,35 @@
-.venv
+# Virtual environments
+.venv/
+venv/
+env/
 
-venv
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# IDE / OS files
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# Runtime outputs
+outputs/logs/
+outputs/snapshots/
+
+# Keep watchlist file structure but ignore local edits if created later
+outputs/watchlist.txt
+
+# EasyOCR downloaded runtime assets
+assets/easyocr/

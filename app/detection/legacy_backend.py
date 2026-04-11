@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import csv
+import logging
+import re
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from threading import Lock
+
+import cv2
+from PIL import Image
+
+
+LOGGER = logging.getLogger("anpr_new_gui.detection")
+
+APP_ROOT = Path(__file__).resolve().parents[2]
+ASSETS_DIR = APP_ROOT / "assets"
+OCR_DIR = ASSETS_DIR / "easyocr"
+OCR_MODEL_DIR = OCR_DIR / "model"
+OCR_NETWORK_DIR = OCR_DIR / "user_network"
+OUTPUTS_DIR = APP_ROOT / "outputs"
+OUTPUT_LOG_DIR = OUTPUTS_DIR / "logs"
+SNAPSHOT_DIR = OUTPUTS_DIR / "snapshots"
+WATCHLIST_PATH = OUTPUTS_DIR / "watchlist.txt"
+PLATE_LOG_PATH = OUTPUT_LOG_DIR / "detected_plates_log.csv"
+
+_OLD_MODEL_ROOT = APP_ROOT.parent / "DRDO_PROJECT" / "ANPD" / "assets" / "models"
+LEGACY_LICENSE_PLATE_MODEL_PATH = _OLD_MODEL_ROOT / "LicensePlateDetector.pt"
+
+PLATE_REGEX = r"^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]{6,10}$"
+STRICT_PLATE_REGEX = r"^[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{4}$"
+OCR_MIN_SCORE = 0.35
+LIVE_VOTE_MIN_HITS = 2
+LIVE_VOTE_TTL = 30
+DEFAULT_CONFIDENCE_THRESHOLD = 0.35
+
+dict_char_to_int = {
+    "O": "0",
+    "Q": "0",
+    "D": "0",
+    "I": "1",
+    "J": "3",
+    "A": "4",
+    "L": "4",
+    "G": "6",
+    "T": "7",
+    "B": "8",
+    "S": "5",
+}
+
+dict_int_to_char = {
+    "0": "O",
+    "1": "I",
+    "2": "Z",
+    "3": "J",
+    "4": "A",
+    "6": "G",
+    "7": "T",
+    "8": "B",
+    "5": "S",
+}
+
+VALID_STATE_CODES = {
+    "AN", "AP", "AR", "AS", "BH", "BR", "CG", "CH", "DD", "DL", "DN", "GA",
+    "GJ", "HP", "HR", "JH", "JK", "KA", "KL", "LA", "LD", "MH", "ML", "MN",
+    "MP", "MZ", "NL", "OD", "PB", "PY", "RJ", "SK", "TN", "TR", "TS", "UK",
+    "UP", "WB",
+}
+
+_reader = None
+_model = None
+_reader_lock = Lock()
+_model_lock = Lock()
+_watchlist_cache: set[str] = set()
+_watchlist_mtime: float = -1.0
+
+
+def ensure_runtime_dirs() -> None:
+    for directory in (ASSETS_DIR, OCR_DIR, OCR_MODEL_DIR, OCR_NETWORK_DIR, OUTPUTS_DIR, OUTPUT_LOG_DIR, SNAPSHOT_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+    if not WATCHLIST_PATH.exists():
+        WATCHLIST_PATH.write_text("", encoding="utf-8")
+
+
+def resolve_plate_model_path() -> Path:
+    if LEGACY_LICENSE_PLATE_MODEL_PATH.exists():
+        return LEGACY_LICENSE_PLATE_MODEL_PATH
+    raise FileNotFoundError(
+        "Legacy plate model not found at "
+        f"{LEGACY_LICENSE_PLATE_MODEL_PATH}"
+    )
+
+
+def _patch_pillow_resampling_compat() -> None:
+    if hasattr(Image, "ANTIALIAS"):
+        return
+    resampling = getattr(Image, "Resampling", None)
+    if resampling is not None and hasattr(resampling, "LANCZOS"):
+        Image.ANTIALIAS = resampling.LANCZOS
+
+
+def create_easyocr_reader():
+    import easyocr
+
+    ensure_runtime_dirs()
+    _patch_pillow_resampling_compat()
+    return easyocr.Reader(
+        ["en"],
+        gpu=False,
+        verbose=False,
+        model_storage_directory=str(OCR_MODEL_DIR),
+        user_network_directory=str(OCR_NETWORK_DIR),
+    )
+
+
+def get_reader():
+    global _reader
+    with _reader_lock:
+        if _reader is None:
+            _reader = create_easyocr_reader()
+        return _reader
+
+
+def _allowlist_ultralytics_model_classes() -> None:
+    import torch
+    import ultralytics.nn.tasks as ultralytics_tasks
+
+    add_safe_globals = getattr(torch.serialization, "add_safe_globals", None)
+    if add_safe_globals is None:
+        return
+    allowed_names = [
+        "BaseModel",
+        "DetectionModel",
+        "SegmentationModel",
+        "ClassificationModel",
+        "PoseModel",
+        "OBBModel",
+    ]
+    allowed_objects = [
+        getattr(ultralytics_tasks, name)
+        for name in allowed_names
+        if hasattr(ultralytics_tasks, name)
+    ]
+    add_safe_globals(allowed_objects)
+
+
+def _preferred_torch_device() -> str:
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda:0"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def load_plate_model():
+    from ultralytics import YOLO
+    import torch
+
+    _allowlist_ultralytics_model_classes()
+    model_path = resolve_plate_model_path()
+    original_torch_load = torch.load
+    device = _preferred_torch_device()
+
+    def trusted_torch_load(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return original_torch_load(*args, **kwargs)
+
+    torch.load = trusted_torch_load
+    try:
+        model = YOLO(str(model_path))
+        model.to(device)
+        return model
+    finally:
+        torch.load = original_torch_load
+
+
+def get_plate_model():
+    global _model
+    with _model_lock:
+        if _model is None:
+            _model = load_plate_model()
+        return _model
+
+
+def loaded_model_path() -> str:
+    return str(resolve_plate_model_path())
+
+
+def clean_ocr_text(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", text.upper())
+
+
+def format_license(text: str) -> str:
+    if len(text) != 10:
+        return text
+    license_plate_ = ""
+    mapping = {
+        0: dict_int_to_char,
+        1: dict_int_to_char,
+        4: dict_int_to_char,
+        5: dict_int_to_char,
+        2: dict_char_to_int,
+        3: dict_char_to_int,
+        6: dict_char_to_int,
+        7: dict_char_to_int,
+        8: dict_char_to_int,
+        9: dict_char_to_int,
+    }
+    for index in range(10):
+        license_plate_ += mapping[index].get(text[index], text[index])
+    return license_plate_
+
+
+def normalize_plate_text(text: str) -> str | None:
+    text = clean_ocr_text(text)
+    if not text:
+        return None
+    if len(text) == 10:
+        candidate = format_license(text)
+        if re.fullmatch(STRICT_PLATE_REGEX, candidate) and candidate[:2] in VALID_STATE_CODES:
+            return candidate
+    if re.fullmatch(PLATE_REGEX, text):
+        return text
+    return None
+
+
+def preprocess_plate_crop(license_plate_crop):
+    if license_plate_crop is None or getattr(license_plate_crop, "size", 0) == 0:
+        return license_plate_crop
+    image = license_plate_crop
+    if len(image.shape) == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    image = cv2.resize(image, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    image = cv2.bilateralFilter(image, 7, 35, 35)
+    _, image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return image
+
+
+def read_license_plate(license_plate_crop):
+    reader = get_reader()
+    processed_crop = preprocess_plate_crop(license_plate_crop)
+    detections = reader.readtext(processed_crop)
+    best_text = None
+    best_score = 0.0
+    for _, text, score in detections:
+        score = float(score or 0.0)
+        if score < OCR_MIN_SCORE:
+            continue
+        normalized = normalize_plate_text(text)
+        if normalized and score > best_score:
+            best_text = normalized
+            best_score = score
+    if best_text is not None:
+        return best_text, best_score
+    return None, None
+
+
+def detect_plates_in_frame(model, frame, confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD) -> list[dict[str, object]]:
+    detections: list[dict[str, object]] = []
+    try:
+        predictions = model.predict(frame, conf=confidence_threshold, verbose=False)
+        boxes = predictions[0].boxes
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Model inference failed on frame: %s", exc)
+        return detections
+    for box in boxes:
+        conf = float(box.conf[0])
+        if conf < confidence_threshold:
+            continue
+        cls_id = int(box.cls[0])
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        if x2 <= x1 or y2 <= y1:
+            continue
+        plate_crop = frame[y1:y2, x1:x2].copy()
+        try:
+            plate_text, ocr_score = read_license_plate(plate_crop)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("OCR failed on crop [%d %d %d %d]: %s", x1, y1, x2, y2, exc)
+            plate_text, ocr_score = None, None
+        detections.append(
+            {
+                "bbox": (x1, y1, x2, y2),
+                "confidence": conf,
+                "class_id": cls_id,
+                "label": getattr(model, "names", {}).get(cls_id, "plate"),
+                "plate_text": plate_text,
+                "ocr_score": ocr_score,
+                "plate_crop": plate_crop,
+            }
+        )
+    return detections
+
+
+class PlateVoteTracker:
+    def __init__(self, min_hits: int = LIVE_VOTE_MIN_HITS, ttl: int = LIVE_VOTE_TTL):
+        self.min_hits = min_hits
+        self.ttl = ttl
+        self._tick = 0
+        self._store: dict[tuple[str, int, int], dict[str, object]] = {}
+
+    def _bucket_key(self, source: str, bbox: tuple[int, int, int, int]) -> tuple[str, int, int]:
+        x1, y1, x2, y2 = bbox
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        return (source, cx // 80, cy // 40)
+
+    def register(self, source: str, bbox: tuple[int, int, int, int], plate_text: str, confidence: float = 0.0) -> str | None:
+        normalized = normalize_plate_text(plate_text)
+        if not normalized:
+            return None
+        self._tick += 1
+        key = self._bucket_key(source, bbox)
+        slot = self._store.setdefault(key, {"votes": defaultdict(int), "best_conf": {}, "last_seen": self._tick})
+        slot["last_seen"] = self._tick
+        slot["votes"][normalized] += 1
+        slot["best_conf"][normalized] = max(float(confidence or 0.0), slot["best_conf"].get(normalized, 0.0))
+        self.prune()
+        best_text, best_hits = max(
+            slot["votes"].items(),
+            key=lambda item: (item[1], slot["best_conf"].get(item[0], 0.0), item[0]),
+        )
+        if best_hits >= self.min_hits:
+            return best_text
+        return None
+
+    def prune(self):
+        cutoff = self._tick - self.ttl
+        stale_keys = [key for key, slot in self._store.items() if slot["last_seen"] < cutoff]
+        for key in stale_keys:
+            self._store.pop(key, None)
+
+
+def safe_stem(value: str) -> str:
+    stem = Path(value).stem if value else "output"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+    return cleaned or "output"
+
+
+def next_snapshot_path(plate_number: str, source: str, timestamp: datetime | None = None) -> Path:
+    ensure_runtime_dirs()
+    stamp = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return SNAPSHOT_DIR / f"{safe_stem(source)}_{safe_stem(plate_number)}_{stamp}.png"
+
+
+def save_plate_snapshot(plate_region, snapshot_path: Path) -> Path | None:
+    if plate_region is None or getattr(plate_region, "size", 0) == 0:
+        return None
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(snapshot_path), plate_region)
+    return snapshot_path
+
+
+def load_watchlist() -> set[str]:
+    global _watchlist_cache, _watchlist_mtime
+    ensure_runtime_dirs()
+    try:
+        current_mtime = WATCHLIST_PATH.stat().st_mtime
+    except OSError:
+        return set()
+    if current_mtime == _watchlist_mtime:
+        return _watchlist_cache
+    _watchlist_mtime = current_mtime
+    _watchlist_cache = {
+        line.strip().upper()
+        for line in WATCHLIST_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    return _watchlist_cache
+
+
+def is_watchlist_hit(plate_number: str) -> bool:
+    return plate_number.upper() in load_watchlist()
+
+
+def append_plate_log(
+    plate_number: str,
+    *,
+    timestamp: datetime | None = None,
+    source: str,
+    confidence: float | None = None,
+    snapshot_path: Path | None = None,
+    watchlist_hit: bool = False,
+) -> None:
+    ensure_runtime_dirs()
+    now = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    with open(PLATE_LOG_PATH, mode="a", newline="", encoding="utf-8") as file:
+        csv.writer(file).writerow(
+            [
+                now,
+                plate_number,
+                source,
+                "" if confidence is None else f"{confidence:.4f}",
+                str(snapshot_path or ""),
+                "1" if watchlist_hit else "0",
+            ]
+        )

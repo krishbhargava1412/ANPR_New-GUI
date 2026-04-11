@@ -193,7 +193,7 @@ class FeedWidget(QLabel):
 class DetectionPage(QWidget):
     """Owns PlatePipeline. Receives frames externally via on_frame_ready()."""
 
-    _FRAME_SKIP = 5
+    _FRAME_SKIP = 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
