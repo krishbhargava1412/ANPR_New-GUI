@@ -1,7 +1,6 @@
 STYLESHEET = """
 * {
     font-family: 'Segoe UI', 'SF Pro Display', 'Helvetica Neue', sans-serif;
-    box-sizing: border-box;
 }
 
 QMainWindow {

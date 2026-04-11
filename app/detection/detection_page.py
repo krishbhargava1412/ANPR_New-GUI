@@ -2,72 +2,76 @@
 Detection page.
 
 Layout (horizontal split):
-  Left  — camera feed with bounding box overlay (2/3 width)
-  Right — LogPanel (1/3 width)
+  Left  - selected camera feed with bounding box overlay
+  Right - LogPanel
 
-Box states:
-  SCANNING  — yellow box + SCANNING... label. Set when boxes_detected fires.
-  CONFIRMED — green box + plate text + confidence. Set when result_ready fires.
-              Auto-expires after _CONFIRMED_TTL_SEC seconds.
+This page now supports simultaneous background detection for every active
+camera. The combo box simply selects which camera's annotated state is shown in
+the main viewer.
 """
 
 from __future__ import annotations
 
-import time
 import enum
+import time
 
 import cv2
 import numpy as np
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSplitter, QFrame, QSizePolicy, QSpacerItem, QComboBox
-)
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSlot
+from PyQt6.QtCore import QSize, Qt, pyqtSlot
 from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpacerItem,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.detection.plate_pipeline import PlatePipeline, PlateResult, DetectedBox
+from app.detection.plate_pipeline import DetectedBox, PlatePipeline, PlateResult
+from app.services.app_runtime import load_ui_settings
 from app.utils.log_panel import LogPanel
 
 
 class BoxState(enum.Enum):
-    SCANNING  = "scanning"
+    SCANNING = "scanning"
     CONFIRMED = "confirmed"
 
 
-# BGR colors
-_COLOR_SCANNING  = (0, 200, 255)   # yellow
-_COLOR_CONFIRMED = (0, 230, 0)     # green
-_FONT             = cv2.FONT_HERSHEY_SIMPLEX
-_FONT_SCALE       = 0.55
-_FONT_THICKNESS   = 1
+_COLOR_SCANNING = (0, 200, 255)
+_COLOR_CONFIRMED = (0, 230, 0)
+_FONT = cv2.FONT_HERSHEY_SIMPLEX
+_FONT_SCALE = 0.55
+_FONT_THICKNESS = 1
 
 
 class _BoxEntry:
-    """Tracks one detected plate box and its current state."""
-
     __slots__ = ("bbox", "confidence", "state", "text", "confirmed_at")
 
     def __init__(self, bbox: tuple[int, int, int, int], confidence: float):
-        self.bbox        = bbox
-        self.confidence  = confidence
-        self.state       = BoxState.SCANNING
-        self.text        = ""
+        self.bbox = bbox
+        self.confidence = confidence
+        self.state = BoxState.SCANNING
+        self.text = ""
         self.confirmed_at: float | None = None
 
     def confirm(self, text: str):
-        self.text         = text
-        self.state        = BoxState.CONFIRMED
+        self.text = text
+        self.state = BoxState.CONFIRMED
         self.confirmed_at = time.monotonic()
 
     def is_expired(self, ttl: float) -> bool:
-        if self.state is not BoxState.CONFIRMED:
+        if self.state is not BoxState.CONFIRMED or self.confirmed_at is None:
             return False
         return (time.monotonic() - self.confirmed_at) > ttl
 
 
-def _iou(a: tuple, b: tuple) -> float:
-    """Intersection-over-union for two (x1,y1,x2,y2) boxes."""
+def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     ix1 = max(a[0], b[0])
     iy1 = max(a[1], b[1])
     ix2 = min(a[2], b[2])
@@ -81,78 +85,55 @@ def _iou(a: tuple, b: tuple) -> float:
 
 
 class FeedWidget(QLabel):
-    """
-    Displays camera frames with state-aware bounding box overlay.
-    Maintains its own _BoxEntry list; updated by set_scanning / set_confirmed.
-    """
-
     _CONFIRMED_TTL_SEC = 2.0
-    _IOU_MATCH_THRESH  = 0.3
+    _IOU_MATCH_THRESH = 0.3
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("feedWidget")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setText("NO FEED\n\nSelect a camera and press START")
+        self.setText("NO FEED\n\nAdd cameras and press START ALL")
         self.setMinimumSize(QSize(480, 320))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._entries: list[_BoxEntry] = []
 
     def set_scanning(self, boxes: list[DetectedBox]):
-        """Called immediately after YOLO — before OCR. Replaces all current entries."""
-        self._entries = [_BoxEntry(b.bbox, b.confidence) for b in boxes]
+        self._entries = [_BoxEntry(box.bbox, box.confidence) for box in boxes]
 
     def set_confirmed(self, results: list[PlateResult]):
-        """
-        Called after OCR. Matches each result to the nearest SCANNING entry by
-        IoU and promotes it to CONFIRMED. Unmatched results create new entries.
-        """
         for result in results:
             best_idx = -1
             best_iou = self._IOU_MATCH_THRESH
-            for i, entry in enumerate(self._entries):
+            for idx, entry in enumerate(self._entries):
                 score = _iou(entry.bbox, result.bbox)
                 if score > best_iou:
                     best_iou = score
-                    best_idx = i
-
+                    best_idx = idx
             if best_idx >= 0:
                 self._entries[best_idx].confirm(result.text)
             else:
-                new_entry = _BoxEntry(result.bbox, result.confidence)
-                new_entry.confirm(result.text)
-                self._entries.append(new_entry)
+                entry = _BoxEntry(result.bbox, result.confidence)
+                entry.confirm(result.text)
+                self._entries.append(entry)
 
     def clear_boxes(self):
         self._entries.clear()
 
     def update_frame(self, frame: np.ndarray):
-        self._expire_confirmed()
+        self._entries = [entry for entry in self._entries if not entry.is_expired(self._CONFIRMED_TTL_SEC)]
         annotated = self._draw(frame)
         h, w, ch = annotated.shape
         qt_img = QImage(annotated.data, w, h, ch * w, QImage.Format.Format_BGR888)
         pixmap = QPixmap.fromImage(qt_img)
-        scaled = pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.FastTransformation,
-        )
+        scaled = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
         self.setPixmap(scaled)
-
-    def _expire_confirmed(self):
-        self._entries = [
-            e for e in self._entries
-            if not e.is_expired(self._CONFIRMED_TTL_SEC)
-        ]
 
     def _draw(self, frame: np.ndarray) -> np.ndarray:
         if not self._entries:
             return frame
-
         out = frame.copy()
         for entry in self._entries:
             x1, y1, x2, y2 = entry.bbox
-
             if entry.state is BoxState.SCANNING:
                 color = _COLOR_SCANNING
                 label = "SCANNING..."
@@ -160,12 +141,9 @@ class FeedWidget(QLabel):
                 color = _COLOR_CONFIRMED
                 label = f"{entry.text}  {entry.confidence:.0%}"
 
-            # box
             cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-
-            # corner brackets (4 corners, 12px arms)
             arm = 12
-            t   = 3
+            thickness = 3
             corners = [
                 ((x1, y1), (x1 + arm, y1), (x1, y1 + arm)),
                 ((x2, y1), (x2 - arm, y1), (x2, y1 + arm)),
@@ -173,40 +151,30 @@ class FeedWidget(QLabel):
                 ((x2, y2), (x2 - arm, y2), (x2, y2 - arm)),
             ]
             for corner, h_pt, v_pt in corners:
-                cv2.line(out, corner, h_pt, color, t)
-                cv2.line(out, corner, v_pt, color, t)
+                cv2.line(out, corner, h_pt, color, thickness)
+                cv2.line(out, corner, v_pt, color, thickness)
 
-            # label background + text
             (tw, th), _ = cv2.getTextSize(label, _FONT, _FONT_SCALE, _FONT_THICKNESS)
             bg_y1 = max(y1 - th - 8, 0)
             cv2.rectangle(out, (x1, bg_y1), (x1 + tw + 8, y1), color, -1)
-            cv2.putText(
-                out, label,
-                (x1 + 4, y1 - 4),
-                _FONT, _FONT_SCALE,
-                (0, 0, 0), _FONT_THICKNESS, cv2.LINE_AA,
-            )
-
+            cv2.putText(out, label, (x1 + 4, y1 - 4), _FONT, _FONT_SCALE, (0, 0, 0), _FONT_THICKNESS, cv2.LINE_AA)
         return out
 
 
 class DetectionPage(QWidget):
-    """Owns PlatePipeline. Receives frames externally via on_frame_ready()."""
-
-    _FRAME_SKIP = 2
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("contentArea")
-        self._pipeline: PlatePipeline | None = None
-        self._frame_counter = 0
+        self._pipelines: dict[int, PlatePipeline] = {}
+        self._frame_counters: dict[int, int] = {}
+        self._latest_frames: dict[int, np.ndarray] = {}
+        self._last_boxes: dict[int, list[DetectedBox]] = {}
+        self._last_results: dict[int, list[PlateResult]] = {}
+        self._camera_status: dict[int, str] = {}
         self._active_camera: int | None = None
         self._running = False
+        self._frame_skip = int(load_ui_settings()["frame_skip"])
         self._build_ui()
-
-    # ------------------------------------------------------------------
-    # UI
-    # ------------------------------------------------------------------
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -216,17 +184,14 @@ class DetectionPage(QWidget):
         header_row = QHBoxLayout()
         title = QLabel("License Plate Detection")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("YOLOv8 detection + Tesseract OCR on live camera feed")
+        subtitle = QLabel("Simultaneous multi-camera detection using the legacy ANPR backend")
         subtitle.setObjectName("pageSubtitle")
-
         title_col = QVBoxLayout()
         title_col.setSpacing(4)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
         header_row.addLayout(title_col)
-        header_row.addSpacerItem(
-            QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        )
+        header_row.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
         root.addLayout(header_row)
         root.addSpacing(20)
 
@@ -237,19 +202,16 @@ class DetectionPage(QWidget):
         self._cam_combo.setObjectName("cameraCombo")
         self._cam_combo.setFixedHeight(36)
         self._cam_combo.setMinimumWidth(160)
-        self._cam_combo.setPlaceholderText("Select camera")
+        self._cam_combo.currentIndexChanged.connect(self._on_camera_selected)
         ctrl.addWidget(self._cam_combo)
 
-        self._start_btn = QPushButton("START")
+        self._start_btn = QPushButton("START ALL")
         self._start_btn.setObjectName("primaryButton")
-        self._start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._start_btn.clicked.connect(self._toggle_detection)
         self._start_btn.setEnabled(False)
-        self._start_btn.clicked.connect(self._toggle_pipeline)
         ctrl.addWidget(self._start_btn)
 
-        ctrl.addSpacerItem(
-            QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        )
+        ctrl.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
 
         self._status_label = QLabel("Idle")
         self._status_label.setObjectName("pageSubtitle")
@@ -277,108 +239,171 @@ class DetectionPage(QWidget):
 
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
-
         root.addWidget(splitter, stretch=1)
 
-    # ------------------------------------------------------------------
-    # Called by MainWindow when camera workers emit frames
-    # ------------------------------------------------------------------
-
     def register_camera(self, index: int):
-        for i in range(self._cam_combo.count()):
-            if self._cam_combo.itemData(i) == index:
-                return
+        if self._camera_index_exists(index):
+            return
         self._cam_combo.addItem(f"Camera {index}", userData=index)
+        self._camera_status[index] = "Idle"
         self._start_btn.setEnabled(True)
+        if self._active_camera is None:
+            self._active_camera = index
+            self._cam_combo.setCurrentIndex(self._cam_combo.count() - 1)
+        if self._running:
+            self._start_pipeline_for_camera(index)
+        self._update_status_text()
 
     def unregister_camera(self, index: int):
-        for i in range(self._cam_combo.count()):
-            if self._cam_combo.itemData(i) == index:
-                self._cam_combo.removeItem(i)
+        self._stop_pipeline_for_camera(index)
+        self._frame_counters.pop(index, None)
+        self._latest_frames.pop(index, None)
+        self._last_boxes.pop(index, None)
+        self._last_results.pop(index, None)
+        self._camera_status.pop(index, None)
+        for combo_index in range(self._cam_combo.count()):
+            if self._cam_combo.itemData(combo_index) == index:
+                self._cam_combo.removeItem(combo_index)
                 break
         if self._active_camera == index:
-            self._stop_pipeline()
-        if self._cam_combo.count() == 0:
-            self._start_btn.setEnabled(False)
+            self._active_camera = self._cam_combo.currentData() if self._cam_combo.count() else None
+            self._restore_selected_camera_state()
+        self._start_btn.setEnabled(self._cam_combo.count() > 0)
+        self._update_status_text()
 
     @pyqtSlot(int, np.ndarray)
     def on_frame_ready(self, camera_index: int, frame: np.ndarray):
-        if camera_index != self._active_camera:
+        self._latest_frames[camera_index] = frame.copy()
+        if camera_index == self._active_camera:
+            self._feed.update_frame(frame)
+        if not self._running:
             return
-
-        self._feed.update_frame(frame)
-
-        if not self._running or self._pipeline is None:
+        pipeline = self._pipelines.get(camera_index)
+        if pipeline is None:
             return
+        self._frame_counters[camera_index] = self._frame_counters.get(camera_index, 0) + 1
+        if self._frame_counters[camera_index] % self._frame_skip == 0:
+            pipeline.submit_frame(camera_index, frame)
 
-        self._frame_counter += 1
-        if self._frame_counter % self._FRAME_SKIP == 0:
-            self._pipeline.submit_frame(camera_index, frame)
+    def apply_runtime_settings(self, settings: dict[str, object]):
+        self._frame_skip = max(1, int(settings.get("frame_skip", self._frame_skip)))
+        for pipeline in self._pipelines.values():
+            pipeline.configure(
+                confidence_threshold=float(settings.get("confidence_threshold", 0.5)),
+                save_snapshots=bool(settings.get("save_snapshots", True)),
+            )
 
-    # ------------------------------------------------------------------
-    # Pipeline control
-    # ------------------------------------------------------------------
-
-    def _toggle_pipeline(self):
+    def _toggle_detection(self):
         if self._running:
-            self._stop_pipeline()
+            self._stop_all_pipelines()
         else:
-            self._start_pipeline()
+            self._start_all_pipelines()
 
-    def _start_pipeline(self):
-        idx = self._cam_combo.currentData()
-        if idx is None:
+    def _start_all_pipelines(self):
+        if self._cam_combo.count() == 0:
             return
-
-        self._active_camera = idx
-        self._pipeline = PlatePipeline()
-        self._pipeline.boxes_detected.connect(self._on_boxes_detected)
-        self._pipeline.result_ready.connect(self._on_results)
-        self._pipeline.status.connect(self._on_pipeline_status)
-        self._pipeline.start()
-
         self._running = True
-        self._start_btn.setText("STOP")
-        self._status_label.setText("Loading model...")
+        for combo_index in range(self._cam_combo.count()):
+            camera_index = int(self._cam_combo.itemData(combo_index))
+            self._start_pipeline_for_camera(camera_index)
+        self._start_btn.setText("STOP ALL")
+        self._update_status_text()
 
-    def _stop_pipeline(self):
-        if self._pipeline is not None:
-            self._pipeline.stop()
-            self._pipeline = None
-
+    def _stop_all_pipelines(self):
+        for camera_index in list(self._pipelines):
+            self._stop_pipeline_for_camera(camera_index)
         self._running = False
-        self._active_camera = None
         self._feed.clear_boxes()
-        self._start_btn.setText("START")
-        self._status_label.setText("Stopped")
+        self._start_btn.setText("START ALL")
+        self._update_status_text()
 
-    # ------------------------------------------------------------------
-    # Pipeline signals
-    # ------------------------------------------------------------------
+    def _start_pipeline_for_camera(self, camera_index: int):
+        if camera_index in self._pipelines:
+            return
+        pipeline = PlatePipeline()
+        pipeline.boxes_detected.connect(self._on_boxes_detected)
+        pipeline.result_ready.connect(self._on_results)
+        pipeline.status.connect(lambda message, cam=camera_index: self._on_pipeline_status(cam, message))
+        pipeline.configure(
+            confidence_threshold=float(load_ui_settings()["confidence_threshold"]),
+            save_snapshots=bool(load_ui_settings()["save_snapshots"]),
+        )
+        self._pipelines[camera_index] = pipeline
+        self._frame_counters[camera_index] = 0
+        self._camera_status[camera_index] = "Loading..."
+        pipeline.start()
+
+    def _stop_pipeline_for_camera(self, camera_index: int):
+        pipeline = self._pipelines.pop(camera_index, None)
+        if pipeline is not None:
+            pipeline.stop()
+        self._camera_status[camera_index] = "Stopped"
+
+    def _camera_index_exists(self, camera_index: int) -> bool:
+        for combo_index in range(self._cam_combo.count()):
+            if self._cam_combo.itemData(combo_index) == camera_index:
+                return True
+        return False
+
+    def _on_camera_selected(self):
+        self._active_camera = self._cam_combo.currentData()
+        self._restore_selected_camera_state()
+        self._update_status_text()
+
+    def _restore_selected_camera_state(self):
+        if self._active_camera is None:
+            self._feed.clear_boxes()
+            self._feed.setText("NO FEED\n\nAdd cameras and press START ALL")
+            return
+        boxes = self._last_boxes.get(self._active_camera, [])
+        results = self._last_results.get(self._active_camera, [])
+        self._feed.set_scanning(boxes)
+        self._feed.set_confirmed(results)
+        frame = self._latest_frames.get(self._active_camera)
+        if frame is not None:
+            self._feed.update_frame(frame)
 
     @pyqtSlot(int, list)
     def _on_boxes_detected(self, camera_index: int, boxes: list[DetectedBox]):
-        """Phase 1 — YOLO done, OCR not yet started. Show SCANNING state."""
-        if camera_index != self._active_camera:
-            return
-        self._feed.set_scanning(boxes)
-        self._status_label.setText(f"Scanning {len(boxes)} plate(s)...")
+        self._last_boxes[camera_index] = boxes
+        if camera_index == self._active_camera:
+            self._feed.set_scanning(boxes)
+            frame = self._latest_frames.get(camera_index)
+            if frame is not None:
+                self._feed.update_frame(frame)
+        self._camera_status[camera_index] = f"Scanning {len(boxes)} plate(s)"
+        self._update_status_text()
 
     @pyqtSlot(list)
     def _on_results(self, results: list[PlateResult]):
-        """Phase 2 — OCR done. Promote matching boxes to CONFIRMED."""
-        self._feed.set_confirmed(results)
+        if not results:
+            return
+        camera_index = results[0].camera_index
+        self._last_results[camera_index] = results
+        if camera_index == self._active_camera:
+            self._feed.set_confirmed(results)
+            frame = self._latest_frames.get(camera_index)
+            if frame is not None:
+                self._feed.update_frame(frame)
         self._log_panel.add_results(results)
-        self._status_label.setText(f"Confirmed {len(results)} plate(s)")
+        self._camera_status[camera_index] = f"Confirmed {len(results)} plate(s)"
+        self._update_status_text()
 
-    @pyqtSlot(str)
-    def _on_pipeline_status(self, message: str):
-        self._status_label.setText(message)
+    def _on_pipeline_status(self, camera_index: int, message: str):
+        self._camera_status[camera_index] = message
+        self._update_status_text()
 
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
+    def _update_status_text(self):
+        if self._active_camera is None:
+            self._status_label.setText("No active camera selected")
+            return
+        camera_count = self._cam_combo.count()
+        active_count = len(self._pipelines)
+        status = self._camera_status.get(int(self._active_camera), "Idle")
+        self._status_label.setText(
+            f"Cameras: {camera_count} | Detecting: {active_count} | Viewing CAM {self._active_camera} | {status}"
+        )
 
     def closeEvent(self, event):
-        self._stop_pipeline()
+        self._stop_all_pipelines()
         super().closeEvent(event)

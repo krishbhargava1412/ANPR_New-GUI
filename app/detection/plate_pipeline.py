@@ -19,6 +19,7 @@ from app.detection.legacy_backend import (
     next_snapshot_path,
     save_plate_snapshot,
 )
+from app.services.app_runtime import load_ui_settings
 
 
 @dataclasses.dataclass
@@ -54,11 +55,19 @@ class PlatePipeline(QThread):
         self._reader = None
         self._vote_tracker = PlateVoteTracker()
         self._confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD
+        self._save_snapshots = True
 
     def submit_frame(self, camera_index: int, frame: np.ndarray):
         with QMutexLocker(self._mutex):
             self._frame = frame.copy()
             self._camera_index = camera_index
+
+    def configure(self, *, confidence_threshold: float | None = None, save_snapshots: bool | None = None):
+        with QMutexLocker(self._mutex):
+            if confidence_threshold is not None:
+                self._confidence_threshold = float(confidence_threshold)
+            if save_snapshots is not None:
+                self._save_snapshots = bool(save_snapshots)
 
     def stop(self):
         with QMutexLocker(self._mutex):
@@ -72,6 +81,11 @@ class PlatePipeline(QThread):
         self.status.emit("Loading detection runtime...")
         try:
             ensure_runtime_dirs()
+            settings = load_ui_settings()
+            self.configure(
+                confidence_threshold=float(settings["confidence_threshold"]),
+                save_snapshots=bool(settings["save_snapshots"]),
+            )
             self._model = get_plate_model()
             self._reader = get_reader()
         except Exception as exc:  # noqa: BLE001
@@ -130,8 +144,10 @@ class PlatePipeline(QThread):
 
             timestamp = time.time()
             watchlist_hit = is_watchlist_hit(stable_text)
-            snapshot_path = next_snapshot_path(stable_text, source)
-            saved_snapshot = save_plate_snapshot(detection.get("plate_crop"), snapshot_path)
+            saved_snapshot = None
+            if self._save_snapshots:
+                snapshot_path = next_snapshot_path(stable_text, source)
+                saved_snapshot = save_plate_snapshot(detection.get("plate_crop"), snapshot_path)
             append_plate_log(
                 stable_text,
                 source=source,
