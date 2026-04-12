@@ -25,7 +25,7 @@ SNAPSHOT_DIR = OUTPUTS_DIR / "snapshots"
 WATCHLIST_PATH = OUTPUTS_DIR / "watchlist.txt"
 PLATE_LOG_PATH = OUTPUT_LOG_DIR / "detected_plates_log.csv"
 
-_OLD_MODEL_ROOT = APP_ROOT.parent / "DRDO_PROJECT" / "ANPD" / "assets" / "models"
+_OLD_MODEL_ROOT = APP_ROOT / "assets" / "models"
 LEGACY_LICENSE_PLATE_MODEL_PATH = _OLD_MODEL_ROOT / "LicensePlateDetector.pt"
 
 PLATE_REGEX = r"^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]{6,10}$"
