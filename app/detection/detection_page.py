@@ -188,6 +188,7 @@ class DetectionPage(QWidget):
         self._last_boxes: dict[int, list[DetectedBox]] = {}
         self._last_results: dict[int, list[PlateResult]] = {}
         self._camera_status: dict[int, str] = {}
+        self._registered_cameras: list[int] = []
         self._active_camera: int | None = None
         self._running = False
         self._frame_skip = int(load_ui_settings()["frame_skip"])
@@ -219,15 +220,9 @@ class DetectionPage(QWidget):
         ctrl = QHBoxLayout()
         ctrl.setSpacing(10)
 
-        self._cam_combo = QComboBox()
-        self._cam_combo.setObjectName("cameraCombo")
-        self._cam_combo.setFixedHeight(36)
-        self._cam_combo.setMinimumWidth(160)
-        self._cam_combo.currentIndexChanged.connect(self._on_camera_selected)
-        ctrl.addWidget(self._cam_combo)
-
-        self._start_btn = QPushButton("START ALL")
+        self._start_btn = QPushButton("START DETECTION")
         self._start_btn.setObjectName("primaryButton")
+        self._start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._start_btn.clicked.connect(self._toggle_detection)
         self._start_btn.setEnabled(False)
         ctrl.addWidget(self._start_btn)
@@ -236,7 +231,7 @@ class DetectionPage(QWidget):
             QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         )
 
-        self._status_label = QLabel("Idle")
+        self._status_label = QLabel("Idle - Select camera from Cameras page to begin")
         self._status_label.setObjectName("pageSubtitle")
         ctrl.addWidget(self._status_label)
 
@@ -272,14 +267,14 @@ class DetectionPage(QWidget):
         root.addWidget(splitter, stretch=1)
 
     def register_camera(self, index: int):
-        if self._camera_index_exists(index):
+        if index in self._registered_cameras:
             return
-        self._cam_combo.addItem(f"Camera {index}", userData=index)
+        self._registered_cameras.append(index)
         self._camera_status[index] = "Idle"
         self._start_btn.setEnabled(True)
         if self._active_camera is None:
             self._active_camera = index
-            self._cam_combo.setCurrentIndex(self._cam_combo.count() - 1)
+            self._restore_selected_camera_state()
         if self._running:
             self._start_pipeline_for_camera(index)
         self._update_status_text()
@@ -291,16 +286,12 @@ class DetectionPage(QWidget):
         self._last_boxes.pop(index, None)
         self._last_results.pop(index, None)
         self._camera_status.pop(index, None)
-        for combo_index in range(self._cam_combo.count()):
-            if self._cam_combo.itemData(combo_index) == index:
-                self._cam_combo.removeItem(combo_index)
-                break
+        if index in self._registered_cameras:
+            self._registered_cameras.remove(index)
         if self._active_camera == index:
-            self._active_camera = (
-                self._cam_combo.currentData() if self._cam_combo.count() else None
-            )
+            self._active_camera = self._registered_cameras[0] if self._registered_cameras else None
             self._restore_selected_camera_state()
-        self._start_btn.setEnabled(self._cam_combo.count() > 0)
+        self._start_btn.setEnabled(len(self._registered_cameras) > 0)
         self._update_status_text()
 
     @pyqtSlot(int, np.ndarray)
@@ -333,14 +324,21 @@ class DetectionPage(QWidget):
         else:
             self._start_all_pipelines()
 
+    def start_detection(self):
+        if not self._running and len(self._registered_cameras) > 0:
+            self._start_all_pipelines()
+
+    def stop_detection(self):
+        if self._running:
+            self._stop_all_pipelines()
+
     def _start_all_pipelines(self):
-        if self._cam_combo.count() == 0:
+        if len(self._registered_cameras) == 0:
             return
         self._running = True
-        for combo_index in range(self._cam_combo.count()):
-            camera_index = int(self._cam_combo.itemData(combo_index))
+        for camera_index in self._registered_cameras:
             self._start_pipeline_for_camera(camera_index)
-        self._start_btn.setText("STOP ALL")
+        self._start_btn.setText("STOP DETECTION")
         self._update_status_text()
 
     def _stop_all_pipelines(self):
@@ -375,21 +373,13 @@ class DetectionPage(QWidget):
             pipeline.stop()
         self._camera_status[camera_index] = "Stopped"
 
-    def _camera_index_exists(self, camera_index: int) -> bool:
-        for combo_index in range(self._cam_combo.count()):
-            if self._cam_combo.itemData(combo_index) == camera_index:
-                return True
-        return False
-
     def _on_camera_selected(self):
-        self._active_camera = self._cam_combo.currentData()
-        self._restore_selected_camera_state()
-        self._update_status_text()
+        pass
 
     def _restore_selected_camera_state(self):
         if self._active_camera is None:
             self._feed.clear_boxes()
-            self._feed.setText("NO FEED\n\nAdd cameras and press START ALL")
+            self._feed.setText("NO FEED\n\nAdd cameras from Cameras page")
             return
         boxes = self._last_boxes.get(self._active_camera, [])
         results = self._last_results.get(self._active_camera, [])
@@ -430,15 +420,19 @@ class DetectionPage(QWidget):
         self._update_status_text()
 
     def _update_status_text(self):
-        if self._active_camera is None:
-            self._status_label.setText("No active camera selected")
+        if len(self._registered_cameras) == 0:
+            self._status_label.setText("No cameras registered - Add cameras from Cameras page")
             return
-        camera_count = self._cam_combo.count()
         active_count = len(self._pipelines)
-        status = self._camera_status.get(int(self._active_camera), "Idle")
-        self._status_label.setText(
-            f"Cameras: {camera_count} | Detecting: {active_count} | Viewing CAM {self._active_camera} | {status}"
-        )
+        if self._active_camera is not None:
+            status = self._camera_status.get(int(self._active_camera), "Idle")
+            self._status_label.setText(
+                f"Active: {len(self._registered_cameras)} camera(s) | Detection: {'Running' if self._running else 'Stopped'} | Viewing CAM {self._active_camera} | {status}"
+            )
+        else:
+            self._status_label.setText(
+                f"Active: {len(self._registered_cameras)} camera(s) | Detection: {'Running' if self._running else 'Stopped'}"
+            )
 
     def closeEvent(self, event):
         self._stop_all_pipelines()

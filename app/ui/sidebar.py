@@ -7,10 +7,7 @@ class Sidebar(QWidget):
 
     NAV_ITEMS = [
         ("DASHBOARD", "dashboard"),
-        ("CAMERAS", "cameras"),
-        ("OCR", "ocr"),
         ("DETECTION", "detection"),
-        ("PIPELINE", "pipeline"),
         ("HISTORY", "history"),
     ]
 

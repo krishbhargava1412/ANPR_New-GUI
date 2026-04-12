@@ -271,7 +271,24 @@ QLabel#feedWidget {
     font-size: 12px;
     letter-spacing: 1px;
     border: 1px solid #1a1a1a;
+    border-radius: 12px;
+}
+
+/* Detection box styling */
+QFrame#detectionBox {
+    background-color: transparent;
+    border: 2px solid #1a1a1a;
     border-radius: 8px;
+}
+
+QFrame#detectionBox[state="scanning"] {
+    border-color: #e8a800;
+    border-radius: 10px;
+}
+
+QFrame#detectionBox[state="confirmed"] {
+    border-color: #00e676;
+    border-radius: 10px;
 }
 
 /* Detection splitter handle */

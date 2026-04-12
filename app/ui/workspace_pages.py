@@ -35,7 +35,6 @@ from app.services.app_runtime import (
     dashboard_stats,
     dependency_status,
     load_ui_settings,
-    open_in_shell,
     save_ui_settings,
     search_plate_log,
     clear_plate_log,
@@ -108,9 +107,6 @@ class DashboardPage(QWidget):
             ("REFRESH", self.refresh),
             ("CLEAR LOG", self._clear_log),
             ("CLEAR OUTPUTS", self._clear_outputs),
-            ("OPEN OUTPUTS", lambda: open_in_shell(OUTPUTS_DIR)),
-            ("OPEN WATCHLIST", lambda: open_in_shell(WATCHLIST_PATH)),
-            ("OPEN LOG CSV", lambda: open_in_shell(PLATE_LOG_PATH)),
         ):
             btn = QPushButton(text)
             btn.setObjectName("secondaryButton")
@@ -134,63 +130,6 @@ class DashboardPage(QWidget):
     def _clear_outputs(self):
         count = clear_outputs()
         self.refresh()
-
-
-class PipelinePage(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("contentArea")
-        self._build_ui()
-        self.refresh()
-
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 36, 36, 36)
-        layout.setSpacing(20)
-        layout.addLayout(
-            _page_header(
-                "Pipeline", "Check old batch-pipeline integration and runtime readiness"
-            )
-        )
-
-        self._status = QTextEdit()
-        self._status.setReadOnly(True)
-        self._status.setMinimumHeight(260)
-        layout.addWidget(self._status)
-
-        row = QHBoxLayout()
-        for text, handler in (
-            ("REFRESH CHECKS", self.refresh),
-            ("OPEN OUTPUTS", lambda: open_in_shell(OUTPUTS_DIR)),
-            ("OPEN LOG FOLDER", lambda: open_in_shell(PLATE_LOG_PATH.parent)),
-        ):
-            btn = QPushButton(text)
-            btn.setObjectName("secondaryButton")
-            btn.clicked.connect(handler)
-            row.addWidget(btn)
-        row.addStretch()
-        layout.addLayout(row)
-        layout.addStretch()
-
-    def refresh(self):
-        status = dependency_status()
-        lines = [
-            f"Batch detector: {status['pipeline_batch']}",
-            f"CSV interpolation: {status['pipeline_interpolate']}",
-            f"Video renderer: {status['pipeline_visualize']}",
-            "",
-            f"Detection model: {status['model_path']}",
-            f"Model exists: {status['model_exists']}",
-            f"Device: {status['device']}",
-            f"Torch: {status['torch']}",
-            f"OpenCV: {status['opencv']}",
-            f"EasyOCR: {status['easyocr']}",
-            f"Ultralytics: {status['ultralytics']}",
-            "",
-            "This page currently verifies pipeline integration readiness.",
-            "The live multi-camera path is integrated in Cameras + Detection.",
-        ]
-        self._status.setPlainText("\n".join(lines))
 
 
 class HistoryPage(QWidget):
@@ -261,8 +200,6 @@ class HistoryPage(QWidget):
 
         for text, handler in (
             ("OPEN SNAPSHOT", self._open_selected_snapshot),
-            ("OPEN SNAPSHOT FOLDER", lambda: open_in_shell(SNAPSHOT_DIR)),
-            ("OPEN LOG CSV", lambda: open_in_shell(PLATE_LOG_PATH)),
         ):
             btn = QPushButton(text)
             btn.setObjectName("secondaryButton")
@@ -338,11 +275,15 @@ class HistoryPage(QWidget):
             return
         snapshot_path = Path(str(match.get("snapshot_path") or ""))
         if snapshot_path.exists():
-            open_in_shell(snapshot_path)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Snapshot", f"Snapshot saved at:\n{snapshot_path}"
+            )
 
 
 class SettingsPage(QWidget):
     settings_changed = pyqtSignal(dict)
+    camera_config_changed = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -357,11 +298,38 @@ class SettingsPage(QWidget):
         layout.addLayout(
             _page_header(
                 "Settings",
-                "Detection, storage, and alert settings from the old workflow",
+                "Detection, storage, camera configuration, and alert settings",
             )
         )
 
-        form_box = QGroupBox("Runtime")
+        camera_box = QGroupBox("Camera Configuration")
+        camera_form = QFormLayout(camera_box)
+        camera_form.setSpacing(12)
+
+        self._scan_cameras_btn = QPushButton("SCAN CAMERAS")
+        self._scan_cameras_btn.setObjectName("secondaryButton")
+        self._scan_cameras_btn.clicked.connect(self._scan_cameras)
+        camera_form.addRow("", self._scan_cameras_btn)
+
+        self._camera_status_label = QLabel("Click scan to detect available cameras")
+        self._camera_status_label.setObjectName("pageSubtitle")
+        camera_form.addRow("Status", self._camera_status_label)
+
+        self._camera_indices = QLineEdit()
+        self._camera_indices.setPlaceholderText("e.g., 0,1,2")
+        camera_form.addRow("Camera Indices", self._camera_indices)
+
+        self._default_camera = QSpinBox()
+        self._default_camera.setRange(-1, 10)
+        self._default_camera.setSpecialValueText("None")
+        camera_form.addRow("Default Camera", self._default_camera)
+
+        self._auto_start_cameras = QCheckBox("Auto-start cameras on detection")
+        camera_form.addRow("Auto-start", self._auto_start_cameras)
+
+        layout.addWidget(camera_box)
+
+        form_box = QGroupBox("Detection Settings")
         form = QFormLayout(form_box)
         form.setSpacing(12)
 
@@ -397,27 +365,25 @@ class SettingsPage(QWidget):
         layout.addWidget(path_box)
 
         row = QHBoxLayout()
-        for text, handler in (
-            ("SAVE SETTINGS", self._save),
-            ("OPEN WATCHLIST", lambda: open_in_shell(WATCHLIST_PATH)),
-            ("OPEN OUTPUTS", lambda: open_in_shell(OUTPUTS_DIR)),
-        ):
-            btn = QPushButton(text)
-            btn.setObjectName(
-                "secondaryButton" if text != "SAVE SETTINGS" else "primaryButton"
-            )
-            btn.clicked.connect(handler)
-            row.addWidget(btn)
+        save_btn = QPushButton("SAVE SETTINGS")
+        save_btn.setObjectName("primaryButton")
+        save_btn.clicked.connect(self._save)
+        row.addWidget(save_btn)
         row.addStretch()
         layout.addLayout(row)
         layout.addStretch()
 
     def _load(self):
         settings = load_ui_settings()
-        self._confidence.setValue(float(settings["confidence_threshold"]))
-        self._frame_skip.setValue(int(settings["frame_skip"]))
-        self._save_snapshots.setChecked(bool(settings["save_snapshots"]))
-        self._watchlist_alerts.setChecked(bool(settings["watchlist_alerts_enabled"]))
+        self._confidence.setValue(float(settings.get("confidence_threshold", 0.5)))
+        self._frame_skip.setValue(int(settings.get("frame_skip", 5)))
+        self._save_snapshots.setChecked(bool(settings.get("save_snapshots", True)))
+        self._watchlist_alerts.setChecked(bool(settings.get("watchlist_alerts_enabled", True)))
+        
+        indices = settings.get("camera_indices", "")
+        self._camera_indices.setText(indices)
+        self._default_camera.setValue(int(settings.get("default_camera", -1)))
+        self._auto_start_cameras.setChecked(bool(settings.get("auto_start_cameras", False)))
 
     def _save(self):
         settings = save_ui_settings(
@@ -426,9 +392,27 @@ class SettingsPage(QWidget):
                 "frame_skip": int(self._frame_skip.value()),
                 "save_snapshots": bool(self._save_snapshots.isChecked()),
                 "watchlist_alerts_enabled": bool(self._watchlist_alerts.isChecked()),
+                "camera_indices": self._camera_indices.text().strip(),
+                "default_camera": int(self._default_camera.value()),
+                "auto_start_cameras": bool(self._auto_start_cameras.isChecked()),
             }
         )
         self.settings_changed.emit(settings)
+        self.camera_config_changed.emit(settings)
+
+    def _scan_cameras(self):
+        import cv2
+        found = []
+        for i in range(10):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                found.append(i)
+                cap.release()
+        if found:
+            self._camera_status_label.setText(f"Found: {found}")
+            self._camera_indices.setText(",".join(map(str, found)))
+        else:
+            self._camera_status_label.setText("No cameras found")
 
 
 class AboutPage(QWidget):
@@ -444,45 +428,71 @@ class AboutPage(QWidget):
         layout.setSpacing(20)
         layout.addLayout(
             _page_header(
-                "About", "Diagnostics and integration checks for the old ANPR stack"
+                "System Info", "Device status, model information, and runtime diagnostics"
             )
         )
 
-        self._grid = QGridLayout()
-        self._grid.setHorizontalSpacing(18)
-        self._grid.setVerticalSpacing(10)
-        layout.addLayout(self._grid)
+        info_box = QGroupBox("Runtime Information")
+        info_layout = QGridLayout(info_box)
+        info_layout.setSpacing(12)
+        
+        self._info_labels = {}
+        info_items = [
+            ("device_label", "Processing Device"),
+            ("model_path_label", "Model Path"),
+            ("model_exists_label", "Model Status"),
+            ("torch_label", "PyTorch Version"),
+            ("opencv_label", "OpenCV"),
+            ("easyocr_label", "EasyOCR"),
+            ("ultralytics_label", "Ultralytics"),
+            ("plate_log_label", "Plate Log"),
+            ("watchlist_label", "Watchlist"),
+            ("outputs_label", "Outputs Directory"),
+        ]
+        
+        for idx, (key, label) in enumerate(info_items):
+            key_label = QLabel(label)
+            key_label.setObjectName("sectionLabel")
+            val_label = QLabel("-")
+            val_label.setObjectName("pageSubtitle")
+            val_label.setWordWrap(True)
+            self._info_labels[key] = val_label
+            info_layout.addWidget(key_label, idx, 0)
+            info_layout.addWidget(val_label, idx, 1)
+
+        layout.addWidget(info_box)
 
         row = QHBoxLayout()
-        for text, handler in (
-            ("REFRESH", self.refresh),
-            ("OPEN APP LOG", lambda: open_in_shell(APP_LOG_PATH)),
-            ("OPEN OUTPUTS", lambda: open_in_shell(OUTPUTS_DIR)),
-        ):
-            btn = QPushButton(text)
-            btn.setObjectName("secondaryButton")
-            btn.clicked.connect(handler)
-            row.addWidget(btn)
+        refresh_btn = QPushButton("REFRESH")
+        refresh_btn.setObjectName("secondaryButton")
+        refresh_btn.clicked.connect(self.refresh)
+        row.addWidget(refresh_btn)
         row.addStretch()
         layout.addLayout(row)
         layout.addStretch()
 
     def refresh(self):
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
         status = dependency_status()
-        for row_index, (label, value) in enumerate(status.items()):
-            key = QLabel(label.replace("_", " ").upper())
-            key.setObjectName("sectionLabel")
-            val = QLabel(value)
-            val.setWordWrap(True)
-            val.setObjectName("pageSubtitle")
-            self._grid.addWidget(key, row_index, 0)
-            self._grid.addWidget(val, row_index, 1)
+        
+        label_map = {
+            "device": "device_label",
+            "model_path": "model_path_label",
+            "model_exists": "model_exists_label",
+            "torch": "torch_label",
+            "opencv": "opencv_label",
+            "easyocr": "easyocr_label",
+            "ultralytics": "ultralytics_label",
+            "plate_log": "plate_log_label",
+            "watchlist": "watchlist_label",
+            "outputs": "outputs_label",
+        }
+        
+        for key, label_key in label_map.items():
+            if label_key in self._info_labels:
+                value = status.get(key, "N/A")
+                if key == "model_exists":
+                    value = "Found" if value == "Yes" else "Not Found"
+                self._info_labels[label_key].setText(str(value))
 
 
 class UserManagementPage(QWidget):

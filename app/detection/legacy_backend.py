@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import string
 import logging
 import re
 from collections import defaultdict
@@ -49,27 +50,19 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
 dict_char_to_int = {
     "O": "0",
-    "Q": "0",
-    "D": "0",
     "I": "1",
     "J": "3",
     "A": "4",
-    "L": "4",
     "G": "6",
-    "T": "7",
-    "B": "8",
     "S": "5",
 }
 
 dict_int_to_char = {
     "0": "O",
     "1": "I",
-    "2": "Z",
     "3": "J",
     "4": "A",
     "6": "G",
-    "7": "T",
-    "8": "B",
     "5": "S",
 }
 
@@ -170,6 +163,13 @@ def _preferred_torch_device() -> str:
     return "cpu"
 
 
+def _get_safe_device() -> str:
+    try:
+        return _preferred_torch_device()
+    except Exception:
+        return "cpu"
+
+
 def load_plate_model():
     from ultralytics import YOLO
     import torch
@@ -177,7 +177,7 @@ def load_plate_model():
     _allowlist_ultralytics_model_classes()
     model_path = resolve_plate_model_path()
     original_torch_load = torch.load
-    device = _preferred_torch_device()
+    device = _get_safe_device()
 
     def trusted_torch_load(*args, **kwargs):
         kwargs.setdefault("weights_only", False)
@@ -186,7 +186,10 @@ def load_plate_model():
     torch.load = trusted_torch_load
     try:
         model = YOLO(str(model_path))
-        model.to(device)
+        try:
+            model.to(device)
+        except Exception:
+            model.to("cpu")
         return model
     finally:
         torch.load = original_torch_load
@@ -204,11 +207,36 @@ def loaded_model_path() -> str:
     return str(resolve_plate_model_path())
 
 
-def clean_ocr_text(text: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", text.upper())
+def license_complies_format(text: str) -> bool:
+    """Return True if *text* matches a valid plate format.
+
+    Ten-character plates are validated against the Indian positional format
+    (AA##AA####). Plates of 6–9 characters are accepted if they match the
+    configurable PLATE_REGEX from settings.
+    """
+    if len(text) == 10:
+        return (
+            (text[0] in string.ascii_uppercase or text[0] in dict_int_to_char)
+            and (text[1] in string.ascii_uppercase or text[1] in dict_int_to_char)
+            and (text[2].isdigit() or text[2] in dict_char_to_int)
+            and (text[3].isdigit() or text[3] in dict_char_to_int)
+            and (text[4] in string.ascii_uppercase or text[4] in dict_int_to_char)
+            and (text[5] in string.ascii_uppercase or text[5] in dict_int_to_char)
+            and (text[6].isdigit() or text[6] in dict_char_to_int)
+            and (text[7].isdigit() or text[7] in dict_char_to_int)
+            and (text[8].isdigit() or text[8] in dict_char_to_int)
+            and (text[9].isdigit() or text[9] in dict_char_to_int)
+        )
+    return bool(re.match(PLATE_REGEX, text))
 
 
 def format_license(text: str) -> str:
+    """Apply position-based OCR-correction for 10-char Indian plates.
+
+    For plates shorter than 10 characters (allowed by PLATE_REGEX) the text is
+    returned as-is because the positional correction map only applies to the
+    Indian AA##AA#### format.
+    """
     if len(text) != 10:
         return text
     license_plate_ = ""
@@ -230,14 +258,14 @@ def format_license(text: str) -> str:
 
 
 def normalize_plate_text(text: str) -> str | None:
-    text = clean_ocr_text(text)
+    text = text.upper().replace(" ", "")
     if not text:
         return None
     if len(text) == 10:
-        candidate = format_license(text)
-        if re.fullmatch(STRICT_PLATE_REGEX, candidate) and candidate[:2] in VALID_STATE_CODES:
-            return candidate
-    if re.fullmatch(PLATE_REGEX, text):
+        if not license_complies_format(text):
+            return None
+        return format_license(text)
+    if license_complies_format(text):
         return text
     return None
 

@@ -3,9 +3,6 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
-import os
-import platform
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -40,10 +37,6 @@ SETTINGS_PATH = get_logs_dir() / "ui_settings.json"
 APP_LOG_PATH = get_logs_dir() / "anpr_app.log"
 
 APP_ROOT = Path(__file__).resolve().parents[2]
-OLD_REPO_ROOT = APP_ROOT.parent / "DRDO_PROJECT" / "ANPD"
-OLD_BATCH_ENTRY = OLD_REPO_ROOT / "src" / "anpr_system" / "main.py"
-OLD_VISUALIZE_ENTRY = OLD_REPO_ROOT / "src" / "anpr_system" / "visualize.py"
-OLD_INTERPOLATE_ENTRY = OLD_REPO_ROOT / "src" / "anpr_system" / "add_missing_data.py"
 
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "confidence_threshold": DEFAULT_CONFIDENCE_THRESHOLD,
@@ -80,16 +73,6 @@ def save_ui_settings(settings: dict[str, Any]) -> dict[str, Any]:
     merged.update(settings)
     SETTINGS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return merged
-
-
-def open_in_shell(path: Path) -> None:
-    system = platform.system()
-    if system == "Windows":
-        os.startfile(path)  # type: ignore[attr-defined]
-    elif system == "Darwin":
-        subprocess.run(["open", str(path)], check=False)
-    else:
-        subprocess.run(["xdg-open", str(path)], check=False)
 
 
 def parse_plate_log_row(row: list[str]) -> dict[str, Any] | None:
@@ -213,12 +196,15 @@ def dependency_status() -> dict[str, str]:
     if packages["torch"]:
         import torch
 
-        if torch.cuda.is_available():
-            device = f"CUDA ({torch.cuda.get_device_name(0)})"
-        else:
-            mps = getattr(torch.backends, "mps", None)
-            if mps is not None and torch.backends.mps.is_available():
-                device = "MPS"
+        try:
+            if torch.cuda.is_available():
+                device = f"CUDA ({torch.cuda.get_device_name(0)})"
+            else:
+                mps = getattr(torch.backends, "mps", None)
+                if mps is not None and torch.backends.mps.is_available():
+                    device = "MPS"
+        except Exception:
+            device = "CPU"
         torch_message = f"torch {torch.__version__}"
 
     return {
@@ -233,9 +219,4 @@ def dependency_status() -> dict[str, str]:
         "plate_log": str(PLATE_LOG_PATH),
         "watchlist": str(WATCHLIST_PATH),
         "outputs": str(OUTPUTS_DIR),
-        "pipeline_batch": "Ready" if OLD_BATCH_ENTRY.exists() else "Missing",
-        "pipeline_visualize": "Ready" if OLD_VISUALIZE_ENTRY.exists() else "Missing",
-        "pipeline_interpolate": "Ready"
-        if OLD_INTERPOLATE_ENTRY.exists()
-        else "Missing",
     }

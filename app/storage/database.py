@@ -27,6 +27,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     salt: Mapped[str] = mapped_column(String(32), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    created_by_admin_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True)
@@ -104,6 +105,15 @@ def get_session():
 def init_db() -> None:
     engine = get_engine()
     Base.metadata.create_all(engine)
+    
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN created_by_admin_id INTEGER REFERENCES users(id)"))
+            conn.commit()
+        except Exception:
+            pass
+    
     create_default_admin()
 
 
@@ -129,20 +139,25 @@ def create_default_admin() -> None:
         session.close()
 
 
-def verify_user(username: str, password: str) -> Optional[User]:
+def verify_user(username: str, password: str) -> Optional[dict]:
     session = get_session()
     try:
         user = session.query(User).filter(User.username == username, User.is_active == True).first()
         if user and user.verify_password(password):
             user.last_login = datetime.now()
             session.commit()
-            return user
+            return {
+                "id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "created_by_admin_id": user.created_by_admin_id,
+            }
         return None
     finally:
         session.close()
 
 
-def create_user(username: str, password: str, role: str = "user") -> Optional[User]:
+def create_user(username: str, password: str, role: str = "user", created_by_admin_id: Optional[int] = None) -> Optional[User]:
     session = get_session()
     try:
         existing = session.query(User).filter(User.username == username).first()
@@ -155,6 +170,7 @@ def create_user(username: str, password: str, role: str = "user") -> Optional[Us
             password_hash=User.hash_password(password, salt),
             salt=salt,
             role=role,
+            created_by_admin_id=created_by_admin_id,
             is_active=True,
         )
         session.add(user)
@@ -168,10 +184,52 @@ def create_user(username: str, password: str, role: str = "user") -> Optional[Us
         session.close()
 
 
+def update_user_password(user_id: int, new_password: str) -> bool:
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if user:
+            user.salt = secrets.token_hex(16)
+            user.password_hash = User.hash_password(new_password, user.salt)
+            session.commit()
+            return True
+        return False
+    except Exception as e:
+        session.rollback()
+        LOGGER.error("Failed to update password: %s", e)
+        return False
+    finally:
+        session.close()
+
+
+def get_users_by_admin(admin_id: int) -> list[User]:
+    session = get_session()
+    try:
+        return session.query(User).filter(User.created_by_admin_id == admin_id).all()
+    finally:
+        session.close()
+
+
 def get_user_by_id(user_id: int) -> Optional[User]:
     session = get_session()
     try:
         return session.query(User).filter(User.id == user_id).first()
+    finally:
+        session.close()
+
+
+def user_exists(username: str) -> bool:
+    session = get_session()
+    try:
+        return session.query(User).filter(User.username == username).first() is not None
+    finally:
+        session.close()
+
+
+def admin_exists() -> bool:
+    session = get_session()
+    try:
+        return session.query(User).filter(User.role == "admin").first() is not None
     finally:
         session.close()
 

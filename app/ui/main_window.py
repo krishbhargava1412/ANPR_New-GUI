@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QStackedWidget, QVBoxLayout, QWidget, QPushButton, QMenu
+from PyQt6.QtWidgets import (
+    QHBoxLayout, QLabel, QMainWindow, QStackedWidget, QVBoxLayout, 
+    QWidget, QPushButton, QMenu, QMessageBox, QLineEdit
+)
 
 from app.camera.camera_page import CameraPage
 from app.detection.detection_page import DetectionPage
 from app.ui.sidebar import Sidebar
-from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, PipelinePage, SettingsPage
+from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage
 from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
 from app.storage.session import is_authenticated, is_admin
 
@@ -34,8 +37,40 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Vision - ANPR Command Center")
         self.setMinimumSize(QSize(1100, 700))
-        self._build_ui()
+        self._user_menu = None
         self._create_menu_bar()
+        self._build_ui()
+        self._initialize_runtime()
+        self._check_authentication()
+
+    def _initialize_runtime(self):
+        from app.detection.legacy_backend import get_plate_model, _get_safe_device
+        from app.services.app_runtime import dependency_status
+        
+        device = _get_safe_device()
+        print(f"[INFO] Using processing device: {device}")
+        
+        status = dependency_status()
+        print(f"[INFO] Device detected: {status['device']}")
+        
+        try:
+            get_plate_model()
+            print(f"[INFO] Model loaded successfully on {device}")
+        except Exception as e:
+            print(f"[WARN] Model loading failed: {e}")
+        
+        self.statusBar().showMessage(f"Device: {device} | Ready")
+
+    def _check_authentication(self):
+        if not is_authenticated():
+            self._show_login_dialog()
+
+    def _show_login_dialog(self):
+        if show_login_dialog(self):
+            self._update_user_menu()
+            self.statusBar().showMessage("Login successful")
+        else:
+            QMessageBox.warning(self, "Authentication Required", "You must login to use the application.")
 
     def _create_menu_bar(self):
         menubar = self.menuBar()
@@ -44,45 +79,54 @@ class MainWindow(QMainWindow):
         self._update_user_menu()
 
     def _update_user_menu(self):
+        if self._user_menu is None:
+            return
         self._user_menu.clear()
 
         user = get_current_user()
         if user:
-            user_info = QLabel(f"Logged in: {user.username} ({user.role})")
-            user_info.setStyleSheet("padding: 4px;")
-            action = self._user_menu.addAction(f"Logged in: {user.username} ({user.role})")
+            action = self._user_menu.addAction(f"Logged in: {user['username']} ({user['role']})")
             action.setEnabled(False)
-
-            if is_admin():
-                admin_action = self._user_menu.addAction("Admin Mode")
-                admin_action.setEnabled(False)
 
             self._user_menu.addSeparator()
 
-            logout_action = QPushButton("Logout")
-            logout_action.clicked.connect(self._on_logout)
-            self._user_menu.addAction("Logout")
+            change_pw = self._user_menu.addAction("Change Password")
+            change_pw.triggered.connect(self._on_change_password)
+
+            self._user_menu.addSeparator()
+
+            logout_action = self._user_menu.addAction("Logout")
+            logout_action.triggered.connect(self._on_logout)
 
             if is_admin():
                 self._user_menu.addSeparator()
                 manage_users = self._user_menu.addAction("Manage Users")
                 manage_users.triggered.connect(self._show_user_management)
         else:
-            login_action = QPushButton("Login")
-            login_action.clicked.connect(self._on_login)
-            self._user_menu.addAction("Login")
+            login_action = self._user_menu.addAction("Login")
+            login_action.triggered.connect(self._on_login)
+
+    def _on_change_password(self):
+        from app.ui.login import show_change_password_dialog
+        show_change_password_dialog(self)
 
     def _on_login(self):
         if show_login_dialog(self):
             self._update_user_menu()
             self.statusBar().showMessage("Login successful")
+        else:
+            QMessageBox.warning(self, "Login Required", "You must login to continue.")
 
     def _on_logout(self):
         if show_logout_dialog(self):
             self._update_user_menu()
             self.statusBar().showMessage("Logged out")
+            self._check_authentication()
 
     def _show_user_management(self):
+        if not is_admin():
+            QMessageBox.warning(self, "Access Denied", "Only administrators can manage users.")
+            return
         from app.ui.workspace_pages import UserManagementPage
         self._user_management_page = UserManagementPage()
         self._stack.addWidget(self._user_management_page)
@@ -106,19 +150,14 @@ class MainWindow(QMainWindow):
         root.addWidget(self._stack)
 
         self._dashboard_page = DashboardPage()
-        self._camera_page = CameraPage()
         self._detection_page = DetectionPage()
-        self._pipeline_page = PipelinePage()
         self._history_page = HistoryPage()
         self._settings_page = SettingsPage()
         self._about_page = AboutPage()
 
         pages = [
             ("dashboard", self._dashboard_page),
-            ("cameras", self._camera_page),
-            ("ocr", PlaceholderPage("OCR", "OCR is integrated into the Detection workflow using the old EasyOCR-based backend.")),
             ("detection", self._detection_page),
-            ("pipeline", self._pipeline_page),
             ("history", self._history_page),
             ("settings", self._settings_page),
             ("about", self._about_page),
@@ -129,26 +168,45 @@ class MainWindow(QMainWindow):
             self._stack.addWidget(widget)
             self._page_widgets[page_id] = widget
 
-        self._camera_page.camera_added.connect(self._on_camera_added)
-        self._camera_page.camera_removed.connect(self._on_camera_removed)
         self._settings_page.settings_changed.connect(self._on_settings_changed)
+        self._settings_page.camera_config_changed.connect(self._on_camera_config_changed)
 
         self._switch_page("dashboard")
         self.statusBar().showMessage("Ready")
 
-    def _on_camera_added(self, index: int, worker):
-        worker.frame_ready.connect(self._detection_page.on_frame_ready)
-        self._detection_page.register_camera(index)
-
-    def _on_camera_removed(self, index: int):
-        self._detection_page.unregister_camera(index)
+    def _on_camera_config_changed(self, settings: dict):
+        from app.camera.camera_worker import CameraWorker
+        camera_indices = settings.get("camera_indices", "")
+        auto_start = settings.get("auto_start_cameras", False)
+        
+        if not hasattr(self, '_camera_workers'):
+            self._camera_workers = {}
+        
+        if camera_indices:
+            try:
+                indices = [int(x.strip()) for x in camera_indices.split(",") if x.strip()]
+                for idx in indices:
+                    if idx not in self._camera_workers:
+                        worker = CameraWorker(camera_index=idx, fps=30)
+                        worker.frame_ready.connect(self._detection_page.on_frame_ready)
+                        worker.start()
+                        self._camera_workers[idx] = worker
+                    self._detection_page.register_camera(idx)
+                
+                if auto_start and indices:
+                    self._detection_page.start_detection()
+            except ValueError:
+                pass
 
     def _on_settings_changed(self, settings: dict):
         self._detection_page.apply_runtime_settings(settings)
-        self._pipeline_page.refresh()
         self._about_page.refresh()
 
     def _switch_page(self, page_id: str):
+        if not is_authenticated():
+            self._show_login_dialog()
+            return
+
         widget = self._page_widgets.get(page_id)
         if not widget:
             return
@@ -157,8 +215,6 @@ class MainWindow(QMainWindow):
             self._dashboard_page.refresh()
         elif page_id == "history":
             self._history_page.refresh()
-        elif page_id == "pipeline":
-            self._pipeline_page.refresh()
         elif page_id == "about":
             self._about_page.refresh()
         self.statusBar().showMessage(page_id.upper())
