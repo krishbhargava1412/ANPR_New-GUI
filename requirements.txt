@@ -5,3 +5,6 @@ Pillow>=10.0.0
 easyocr>=1.7.0
 torch>=2.5.0
 ultralytics>=8.0.114
+SQLAlchemy>=2.0.0
+cryptography>=41.0.0
+platformdirs>=4.0.0

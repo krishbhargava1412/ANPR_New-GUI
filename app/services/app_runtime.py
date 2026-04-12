@@ -10,24 +10,36 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.storage import (
+    get_snapshots_dir,
+    get_logs_dir,
+    get_watchlist_path,
+    get_plate_log_path,
+    ensure_storage_dirs,
+    get_db_path,
+    get_easyocr_dir,
+)
+
 from app.detection.legacy_backend import (
-    APP_ROOT,
     DEFAULT_CONFIDENCE_THRESHOLD,
-    OCR_DIR,
-    OUTPUT_LOG_DIR,
-    OUTPUTS_DIR,
-    PLATE_LOG_PATH,
-    SNAPSHOT_DIR,
-    WATCHLIST_PATH,
     ensure_runtime_dirs,
     loaded_model_path,
 )
 
 
-OUTPUT_CSV_DIR = OUTPUTS_DIR / "csv"
-OUTPUT_VIDEO_DIR = OUTPUTS_DIR / "videos"
-SETTINGS_PATH = OUTPUTS_DIR / "ui_settings.json"
-APP_LOG_PATH = OUTPUT_LOG_DIR / "anpr_app.log"
+OUTPUTS_DIR = get_snapshots_dir()
+OUTPUT_LOG_DIR = get_logs_dir()
+OCR_DIR = get_easyocr_dir()
+SNAPSHOT_DIR = get_snapshots_dir()
+WATCHLIST_PATH = get_watchlist_path()
+PLATE_LOG_PATH = get_plate_log_path()
+
+OUTPUT_CSV_DIR = get_logs_dir() / "csv"
+OUTPUT_VIDEO_DIR = get_logs_dir() / "videos"
+SETTINGS_PATH = get_logs_dir() / "ui_settings.json"
+APP_LOG_PATH = get_logs_dir() / "anpr_app.log"
+
+APP_ROOT = Path(__file__).resolve().parents[2]
 OLD_REPO_ROOT = APP_ROOT.parent / "DRDO_PROJECT" / "ANPD"
 OLD_BATCH_ENTRY = OLD_REPO_ROOT / "src" / "anpr_system" / "main.py"
 OLD_VISUALIZE_ENTRY = OLD_REPO_ROOT / "src" / "anpr_system" / "visualize.py"
@@ -42,9 +54,9 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
 
 
 def ensure_app_dirs() -> None:
-    ensure_runtime_dirs()
-    for directory in (OUTPUT_CSV_DIR, OUTPUT_VIDEO_DIR):
-        directory.mkdir(parents=True, exist_ok=True)
+    ensure_storage_dirs()
+    OUTPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_ui_settings() -> dict[str, Any]:

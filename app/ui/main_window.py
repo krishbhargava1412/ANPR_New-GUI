@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QStackedWidget, QVBoxLayout, QWidget, QPushButton, QMenu
 
 from app.camera.camera_page import CameraPage
 from app.detection.detection_page import DetectionPage
 from app.ui.sidebar import Sidebar
 from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, PipelinePage, SettingsPage
+from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
+from app.storage.session import is_authenticated, is_admin
 
 
 class PlaceholderPage(QWidget):
@@ -33,6 +35,58 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Vision - ANPR Command Center")
         self.setMinimumSize(QSize(1100, 700))
         self._build_ui()
+        self._create_menu_bar()
+
+    def _create_menu_bar(self):
+        menubar = self.menuBar()
+
+        self._user_menu = menubar.addMenu("User")
+        self._update_user_menu()
+
+    def _update_user_menu(self):
+        self._user_menu.clear()
+
+        user = get_current_user()
+        if user:
+            user_info = QLabel(f"Logged in: {user.username} ({user.role})")
+            user_info.setStyleSheet("padding: 4px;")
+            action = self._user_menu.addAction(f"Logged in: {user.username} ({user.role})")
+            action.setEnabled(False)
+
+            if is_admin():
+                admin_action = self._user_menu.addAction("Admin Mode")
+                admin_action.setEnabled(False)
+
+            self._user_menu.addSeparator()
+
+            logout_action = QPushButton("Logout")
+            logout_action.clicked.connect(self._on_logout)
+            self._user_menu.addAction("Logout")
+
+            if is_admin():
+                self._user_menu.addSeparator()
+                manage_users = self._user_menu.addAction("Manage Users")
+                manage_users.triggered.connect(self._show_user_management)
+        else:
+            login_action = QPushButton("Login")
+            login_action.clicked.connect(self._on_login)
+            self._user_menu.addAction("Login")
+
+    def _on_login(self):
+        if show_login_dialog(self):
+            self._update_user_menu()
+            self.statusBar().showMessage("Login successful")
+
+    def _on_logout(self):
+        if show_logout_dialog(self):
+            self._update_user_menu()
+            self.statusBar().showMessage("Logged out")
+
+    def _show_user_management(self):
+        from app.ui.workspace_pages import UserManagementPage
+        self._user_management_page = UserManagementPage()
+        self._stack.addWidget(self._user_management_page)
+        self._stack.setCurrentWidget(self._user_management_page)
 
     def _build_ui(self):
         central = QWidget()

@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDoubleSpinBox,
+    QMessageBox,
 )
 
 from app.services.app_runtime import (
@@ -441,4 +442,126 @@ class AboutPage(QWidget):
             val.setObjectName("pageSubtitle")
             self._grid.addWidget(key, row_index, 0)
             self._grid.addWidget(val, row_index, 1)
+
+
+class UserManagementPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("contentArea")
+        self._build_ui()
+        self._refresh_users()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(36, 36, 36, 24)
+        layout.setSpacing(20)
+        layout.addLayout(_page_header("User Management", "Manage system users and roles"))
+
+        self._user_table = QTableWidget()
+        self._user_table.setColumnCount(5)
+        self._user_table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Created At", "Last Login"])
+        self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        layout.addWidget(self._user_table)
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+
+        self._new_username = QLineEdit()
+        self._new_username.setPlaceholderText("Username")
+        self._new_password = QLineEdit()
+        self._new_password.setPlaceholderText("Password")
+        self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._new_role = QLineEdit()
+        self._new_role.setPlaceholderText("Role (user/admin)")
+        self._new_role.setText("user")
+
+        form_layout.addRow("Username:", self._new_username)
+        form_layout.addRow("Password:", self._new_password)
+        form_layout.addRow("Role:", self._new_role)
+
+        btn_layout = QHBoxLayout()
+        self._add_btn = QPushButton("Add User")
+        self._add_btn.clicked.connect(self._on_add_user)
+        self._delete_btn = QPushButton("Delete Selected")
+        self._delete_btn.clicked.connect(self._on_delete_user)
+        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn.clicked.connect(self._refresh_users)
+
+        btn_layout.addWidget(self._add_btn)
+        btn_layout.addWidget(self._delete_btn)
+        btn_layout.addWidget(self._refresh_btn)
+        btn_layout.addStretch()
+
+        layout.addLayout(form_layout)
+        layout.addLayout(btn_layout)
+
+    def _refresh_users(self):
+        from app.storage.database import get_all_users
+        users = get_all_users()
+        self._user_table.setRowCount(0)
+        for user in users:
+            row = self._user_table.rowCount()
+            self._user_table.insertRow(row)
+            self._user_table.setItem(row, 0, QTableWidgetItem(str(user.id)))
+            self._user_table.setItem(row, 1, QTableWidgetItem(user.username))
+            self._user_table.setItem(row, 2, QTableWidgetItem(user.role))
+            self._user_table.setItem(row, 3, QTableWidgetItem(user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else ""))
+            self._user_table.setItem(row, 4, QTableWidgetItem(user.last_login.strftime("%Y-%m-%d %H:%M") if user.last_login else "Never"))
+
+    def _on_add_user(self):
+        from app.storage.database import create_user
+        username = self._new_username.text().strip()
+        password = self._new_password.text()
+        role = self._new_role.text().strip().lower()
+
+        if not username or not password:
+            QMessageBox.warning(self, "Error", "Username and password are required")
+            return
+
+        if role not in ("user", "admin"):
+            QMessageBox.warning(self, "Error", "Role must be 'user' or 'admin'")
+            return
+
+        user = create_user(username, password, role)
+        if user:
+            QMessageBox.information(self, "Success", f"User '{username}' created successfully")
+            self._new_username.clear()
+            self._new_password.clear()
+            self._new_role.setText("user")
+            self._refresh_users()
+        else:
+            QMessageBox.warning(self, "Error", "Failed to create user. Username may already exist.")
+
+    def _on_delete_user(self):
+        from app.storage.database import delete_user
+        current_row = self._user_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Error", "Please select a user to delete")
+            return
+
+        user_id_item = self._user_table.item(current_row, 0)
+        username_item = self._user_table.item(current_row, 1)
+
+        if not user_id_item or not username_item:
+            return
+
+        user_id = int(user_id_item.text())
+        username = username_item.text()
+
+        if username == "admin":
+            QMessageBox.warning(self, "Error", "Cannot delete admin user")
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Delete", f"Delete user '{username}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if delete_user(user_id):
+                QMessageBox.information(self, "Success", f"User '{username}' deleted")
+                self._refresh_users()
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete user")
 

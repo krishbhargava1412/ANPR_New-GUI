@@ -7,26 +7,38 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from typing import Optional
 
 import cv2
 from PIL import Image
+
+from app.storage import (
+    get_snapshots_dir,
+    get_logs_dir,
+    get_watchlist_path,
+    get_plate_log_path,
+    get_easyocr_dir,
+    get_easyocr_model_dir,
+    get_easyocr_network_dir,
+    get_model_path,
+    ensure_storage_dirs,
+)
 
 
 LOGGER = logging.getLogger("anpr_new_gui.detection")
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_DIR = APP_ROOT / "assets"
-OCR_DIR = ASSETS_DIR / "easyocr"
-OCR_MODEL_DIR = OCR_DIR / "model"
-OCR_NETWORK_DIR = OCR_DIR / "user_network"
-OUTPUTS_DIR = APP_ROOT / "outputs"
-OUTPUT_LOG_DIR = OUTPUTS_DIR / "logs"
-SNAPSHOT_DIR = OUTPUTS_DIR / "snapshots"
-WATCHLIST_PATH = OUTPUTS_DIR / "watchlist.txt"
-PLATE_LOG_PATH = OUTPUT_LOG_DIR / "detected_plates_log.csv"
+OCR_DIR = get_easyocr_dir()
+OCR_MODEL_DIR = get_easyocr_model_dir()
+OCR_NETWORK_DIR = get_easyocr_network_dir()
+OUTPUTS_DIR = get_snapshots_dir()
+OUTPUT_LOG_DIR = get_logs_dir()
+SNAPSHOT_DIR = get_snapshots_dir()
+WATCHLIST_PATH = get_watchlist_path()
+PLATE_LOG_PATH = get_plate_log_path()
 
-_OLD_MODEL_ROOT = APP_ROOT / "assets" / "models"
-LEGACY_LICENSE_PLATE_MODEL_PATH = _OLD_MODEL_ROOT / "LicensePlateDetector.pt"
+LEGACY_LICENSE_PLATE_MODEL_PATH = get_model_path("LicensePlateDetector.pt")
 
 PLATE_REGEX = r"^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]{6,10}$"
 STRICT_PLATE_REGEX = r"^[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{4}$"
@@ -77,15 +89,17 @@ _watchlist_mtime: float = -1.0
 
 
 def ensure_runtime_dirs() -> None:
-    for directory in (ASSETS_DIR, OCR_DIR, OCR_MODEL_DIR, OCR_NETWORK_DIR, OUTPUTS_DIR, OUTPUT_LOG_DIR, SNAPSHOT_DIR):
-        directory.mkdir(parents=True, exist_ok=True)
-    if not WATCHLIST_PATH.exists():
-        WATCHLIST_PATH.write_text("", encoding="utf-8")
+    ensure_storage_dirs()
 
 
 def resolve_plate_model_path() -> Path:
     if LEGACY_LICENSE_PLATE_MODEL_PATH.exists():
         return LEGACY_LICENSE_PLATE_MODEL_PATH
+    
+    legacy_fallback = APP_ROOT / "assets" / "models" / "LicensePlateDetector.pt"
+    if legacy_fallback.exists():
+        return legacy_fallback
+    
     raise FileNotFoundError(
         "Legacy plate model not found at "
         f"{LEGACY_LICENSE_PLATE_MODEL_PATH}"
