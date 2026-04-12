@@ -51,7 +51,7 @@ _FONT_THICKNESS = 1
 
 
 class _BoxEntry:
-    __slots__ = ("bbox", "confidence", "state", "text", "confirmed_at")
+    __slots__ = ("bbox", "confidence", "state", "text", "confirmed_at", "updated_at")
 
     def __init__(self, bbox: tuple[int, int, int, int], confidence: float):
         self.bbox = bbox
@@ -59,16 +59,18 @@ class _BoxEntry:
         self.state = BoxState.SCANNING
         self.text = ""
         self.confirmed_at: float | None = None
+        self.updated_at = time.monotonic()
 
     def confirm(self, text: str):
         self.text = text
         self.state = BoxState.CONFIRMED
         self.confirmed_at = time.monotonic()
+        self.updated_at = time.monotonic()
 
-    def is_expired(self, ttl: float) -> bool:
-        if self.state is not BoxState.CONFIRMED or self.confirmed_at is None:
-            return False
-        return (time.monotonic() - self.confirmed_at) > ttl
+    def is_expired(self, scan_ttl: float, confirm_ttl: float) -> bool:
+        if self.state == BoxState.CONFIRMED and self.confirmed_at is not None:
+            return (time.monotonic() - self.confirmed_at) > confirm_ttl
+        return (time.monotonic() - self.updated_at) > scan_ttl
 
 
 def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -86,6 +88,7 @@ def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
 
 class FeedWidget(QLabel):
     _CONFIRMED_TTL_SEC = 2.0
+    _SCANNING_TTL_SEC = 1.0
     _IOU_MATCH_THRESH = 0.3
 
     def __init__(self, parent=None):
@@ -98,7 +101,25 @@ class FeedWidget(QLabel):
         self._entries: list[_BoxEntry] = []
 
     def set_scanning(self, boxes: list[DetectedBox]):
-        self._entries = [_BoxEntry(box.bbox, box.confidence) for box in boxes]
+        matched_indices = set()
+        for box in boxes:
+            best_idx = -1
+            best_iou = self._IOU_MATCH_THRESH
+            for idx, entry in enumerate(self._entries):
+                if idx in matched_indices:
+                    continue
+                score = _iou(entry.bbox, box.bbox)
+                if score > best_iou:
+                    best_iou = score
+                    best_idx = idx
+            if best_idx >= 0:
+                self._entries[best_idx].bbox = box.bbox
+                self._entries[best_idx].confidence = box.confidence
+                self._entries[best_idx].updated_at = time.monotonic()
+                self._entries[best_idx].state = BoxState.SCANNING
+                matched_indices.add(best_idx)
+            else:
+                self._entries.append(_BoxEntry(box.bbox, box.confidence))
 
     def set_confirmed(self, results: list[PlateResult]):
         for result in results:
@@ -123,7 +144,7 @@ class FeedWidget(QLabel):
         self._entries = [
             entry
             for entry in self._entries
-            if not entry.is_expired(self._CONFIRMED_TTL_SEC)
+            if not entry.is_expired(self._SCANNING_TTL_SEC, self._CONFIRMED_TTL_SEC)
         ]
         annotated = self._draw(frame)
         h, w, ch = annotated.shape
@@ -289,7 +310,9 @@ class DetectionPage(QWidget):
         if index in self._registered_cameras:
             self._registered_cameras.remove(index)
         if self._active_camera == index:
-            self._active_camera = self._registered_cameras[0] if self._registered_cameras else None
+            self._active_camera = (
+                self._registered_cameras[0] if self._registered_cameras else None
+            )
             self._restore_selected_camera_state()
         self._start_btn.setEnabled(len(self._registered_cameras) > 0)
         self._update_status_text()
@@ -421,7 +444,9 @@ class DetectionPage(QWidget):
 
     def _update_status_text(self):
         if len(self._registered_cameras) == 0:
-            self._status_label.setText("No cameras registered - Add cameras from Cameras page")
+            self._status_label.setText(
+                "No cameras registered - Add cameras from Cameras page"
+            )
             return
         active_count = len(self._pipelines)
         if self._active_camera is not None:

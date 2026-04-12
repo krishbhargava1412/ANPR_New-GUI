@@ -198,9 +198,7 @@ class HistoryPage(QWidget):
         self._details.setObjectName("pageSubtitle")
         side.addWidget(self._details)
 
-        for text, handler in (
-            ("OPEN SNAPSHOT", self._open_selected_snapshot),
-        ):
+        for text, handler in (("OPEN SNAPSHOT", self._open_selected_snapshot),):
             btn = QPushButton(text)
             btn.setObjectName("secondaryButton")
             btn.clicked.connect(handler)
@@ -276,6 +274,7 @@ class HistoryPage(QWidget):
         snapshot_path = Path(str(match.get("snapshot_path") or ""))
         if snapshot_path.exists():
             from PyQt6.QtWidgets import QMessageBox
+
             QMessageBox.information(
                 self, "Snapshot", f"Snapshot saved at:\n{snapshot_path}"
             )
@@ -288,102 +287,288 @@ class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("contentArea")
+        self._confidence = None
+        self._frame_skip = None
+        self._save_snapshots = None
+        self._watchlist_alerts = None
+        self._camera_indices = None
+        self._default_camera = None
+        self._auto_start_cameras = None
+        self._scan_cameras_btn = None
+        self._camera_status_label = None
         self._build_ui()
         self._load()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 36, 36, 24)
-        layout.setSpacing(20)
-        layout.addLayout(
-            _page_header(
-                "Settings",
-                "Detection, storage, camera configuration, and alert settings",
-            )
-        )
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(36, 36, 36, 24)
+        main_layout.setSpacing(0)
 
-        camera_box = QGroupBox("Camera Configuration")
-        camera_form = QFormLayout(camera_box)
-        camera_form.setSpacing(12)
+        header = QVBoxLayout()
+        header.setSpacing(4)
+        title = QLabel("Settings")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Configure detection, cameras, storage, and alerts")
+        subtitle.setObjectName("pageSubtitle")
+        header.addWidget(title)
+        header.addWidget(subtitle)
+        main_layout.addLayout(header)
+        main_layout.addSpacing(24)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background-color: transparent;")
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(16)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+
+        camera_card = self._create_card(
+            "Camera Configuration",
+            [
+                ("Scan Cameras", self._create_scan_section()),
+                (
+                    "Camera Indices",
+                    self._create_line_edit("e.g., 0,1,2", "camera_indices"),
+                ),
+                (
+                    "Default Camera",
+                    self._create_spin_box(-1, 10, "default_camera", "None"),
+                ),
+                (
+                    "Auto-start",
+                    self._create_checkbox(
+                        "Auto-start cameras on detection", "auto_start_cameras"
+                    ),
+                ),
+            ],
+        )
+        scroll_layout.addWidget(camera_card)
+
+        detection_card = self._create_card(
+            "Detection Settings",
+            [
+                (
+                    "Confidence Threshold",
+                    self._create_double_spin(0.05, 1.0, 0.05, "confidence"),
+                ),
+                (
+                    "Frame Skip",
+                    self._create_spin_box(1, 10, "frame_skip"),
+                ),
+            ],
+        )
+        scroll_layout.addWidget(detection_card)
+
+        storage_card = self._create_card(
+            "Storage & Alerts",
+            [
+                (
+                    "Save Snapshots",
+                    self._create_checkbox(
+                        "Save detected plate snapshots", "save_snapshots"
+                    ),
+                ),
+                (
+                    "Watchlist Alerts",
+                    self._create_checkbox(
+                        "Enable alerts for watchlist hits", "watchlist_alerts"
+                    ),
+                ),
+            ],
+        )
+        scroll_layout.addWidget(storage_card)
+
+        paths_card = self._create_card(
+            "Paths",
+            [
+                ("Settings", self._create_path_display(SETTINGS_PATH)),
+                ("Watchlist", self._create_path_display(WATCHLIST_PATH)),
+                ("Plate Log", self._create_path_display(PLATE_LOG_PATH)),
+                ("Snapshots", self._create_path_display(SNAPSHOT_DIR)),
+            ],
+        )
+        scroll_layout.addWidget(paths_card)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        main_layout.addWidget(scroll)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+
+        save_btn = QPushButton("SAVE SETTINGS")
+        save_btn.setObjectName("primaryButton")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.clicked.connect(self._save)
+        button_row.addWidget(save_btn)
+
+        main_layout.addLayout(button_row)
+
+    def _create_card(self, title: str, fields: list) -> QFrame:
+        card = QFrame()
+        card.setObjectName("statCard")
+
+        layout = QVBoxLayout(card)
+        layout.setSpacing(16)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            "color: #666666; font-size: 11px; letter-spacing: 1.5px; font-weight: 600;"
+        )
+        layout.addWidget(title_label)
+
+        for label, widget in fields:
+            row = QHBoxLayout()
+            row.setSpacing(16)
+
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: #666666; font-size: 11px;")
+            lbl.setMinimumWidth(140)
+
+            row.addWidget(lbl)
+            row.addWidget(widget, 1)
+            layout.addLayout(row)
+
+        return card
+
+    def _create_line_edit(self, placeholder: str, attr_name: str) -> QLineEdit:
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #0d0d0d;
+                border: 1px solid #1e1e1e;
+                border-radius: 6px;
+                padding: 10px 14px;
+                color: #888888;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border-color: #444444;
+            }
+        """)
+        setattr(self, f"_{attr_name}", edit)
+        return edit
+
+    def _create_spin_box(
+        self, min_val: int, max_val: int, attr_name: str, special: str = None
+    ) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(min_val, max_val)
+        if special:
+            spin.setSpecialValueText(special)
+        spin.setStyleSheet("""
+            QSpinBox {
+                background-color: #0d0d0d;
+                border: 1px solid #1e1e1e;
+                border-radius: 6px;
+                padding: 10px 14px;
+                color: #888888;
+                font-size: 12px;
+            }
+            QSpinBox:focus {
+                border-color: #444444;
+            }
+        """)
+        setattr(self, f"_{attr_name}", spin)
+        return spin
+
+    def _create_double_spin(
+        self, min_val: float, max_val: float, step: float, attr_name: str
+    ) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(min_val, max_val)
+        spin.setDecimals(2)
+        spin.setSingleStep(step)
+        spin.setStyleSheet("""
+            QDoubleSpinBox {
+                background-color: #0d0d0d;
+                border: 1px solid #1e1e1e;
+                border-radius: 6px;
+                padding: 10px 14px;
+                color: #888888;
+                font-size: 12px;
+            }
+            QDoubleSpinBox:focus {
+                border-color: #444444;
+            }
+        """)
+        setattr(self, f"_{attr_name}", spin)
+        return spin
+
+    def _create_checkbox(self, text: str, attr_name: str) -> QCheckBox:
+        chk = QCheckBox(text)
+        chk.setStyleSheet("""
+            QCheckBox {
+                color: #666666;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid #333333;
+                background-color: #0d0d0d;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #e8ff00;
+                border-color: #e8ff00;
+            }
+        """)
+        setattr(self, f"_{attr_name}", chk)
+        return chk
+
+    def _create_scan_section(self) -> QWidget:
+        widget = QWidget()
+        container = QHBoxLayout(widget)
+        container.setSpacing(16)
 
         self._scan_cameras_btn = QPushButton("SCAN CAMERAS")
         self._scan_cameras_btn.setObjectName("secondaryButton")
-        self._scan_cameras_btn.clicked.connect(self._scan_cameras)
-        camera_form.addRow("", self._scan_cameras_btn)
+        self._scan_cameras_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._scan_cameras_btn.clicked.connect(self.scan_cameras)
+        container.addWidget(self._scan_cameras_btn)
 
         self._camera_status_label = QLabel("Click scan to detect available cameras")
-        self._camera_status_label.setObjectName("pageSubtitle")
-        camera_form.addRow("Status", self._camera_status_label)
+        self._camera_status_label.setStyleSheet("color: #444444; font-size: 11px;")
+        container.addWidget(self._camera_status_label)
+        container.addStretch()
 
-        self._camera_indices = QLineEdit()
-        self._camera_indices.setPlaceholderText("e.g., 0,1,2")
-        camera_form.addRow("Camera Indices", self._camera_indices)
+        return widget
 
-        self._default_camera = QSpinBox()
-        self._default_camera.setRange(-1, 10)
-        self._default_camera.setSpecialValueText("None")
-        camera_form.addRow("Default Camera", self._default_camera)
-
-        self._auto_start_cameras = QCheckBox("Auto-start cameras on detection")
-        camera_form.addRow("Auto-start", self._auto_start_cameras)
-
-        layout.addWidget(camera_box)
-
-        form_box = QGroupBox("Detection Settings")
-        form = QFormLayout(form_box)
-        form.setSpacing(12)
-
-        self._confidence = QDoubleSpinBox()
-        self._confidence.setRange(0.05, 1.0)
-        self._confidence.setDecimals(2)
-        self._confidence.setSingleStep(0.05)
-        form.addRow("Confidence threshold", self._confidence)
-
-        self._frame_skip = QSpinBox()
-        self._frame_skip.setRange(1, 10)
-        form.addRow("Frame skip", self._frame_skip)
-
-        self._save_snapshots = QCheckBox("Save plate snapshots")
-        form.addRow("Storage", self._save_snapshots)
-
-        self._watchlist_alerts = QCheckBox("Enable watchlist alerts")
-        form.addRow("Alerts", self._watchlist_alerts)
-
-        layout.addWidget(form_box)
-
-        path_box = QGroupBox("Paths")
-        path_layout = QFormLayout(path_box)
-        for label, path in (
-            ("Settings", SETTINGS_PATH),
-            ("Watchlist", WATCHLIST_PATH),
-            ("Plate log", PLATE_LOG_PATH),
-            ("Snapshots", SNAPSHOT_DIR),
-        ):
-            line = QLineEdit(str(path))
-            line.setReadOnly(True)
-            path_layout.addRow(label, line)
-        layout.addWidget(path_box)
-
-        row = QHBoxLayout()
-        save_btn = QPushButton("SAVE SETTINGS")
-        save_btn.setObjectName("primaryButton")
-        save_btn.clicked.connect(self._save)
-        row.addWidget(save_btn)
-        row.addStretch()
-        layout.addLayout(row)
-        layout.addStretch()
+    def _create_path_display(self, path) -> QLineEdit:
+        edit = QLineEdit(str(path))
+        edit.setReadOnly(True)
+        edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #0d0d0d;
+                border: 1px solid #1e1e1e;
+                border-radius: 6px;
+                padding: 10px 14px;
+                color: #444444;
+                font-size: 11px;
+            }
+        """)
+        return edit
 
     def _load(self):
         settings = load_ui_settings()
         self._confidence.setValue(float(settings.get("confidence_threshold", 0.5)))
         self._frame_skip.setValue(int(settings.get("frame_skip", 5)))
         self._save_snapshots.setChecked(bool(settings.get("save_snapshots", True)))
-        self._watchlist_alerts.setChecked(bool(settings.get("watchlist_alerts_enabled", True)))
-        
+        self._watchlist_alerts.setChecked(
+            bool(settings.get("watchlist_alerts_enabled", True))
+        )
+
         indices = settings.get("camera_indices", "")
         self._camera_indices.setText(indices)
         self._default_camera.setValue(int(settings.get("default_camera", -1)))
-        self._auto_start_cameras.setChecked(bool(settings.get("auto_start_cameras", False)))
+        self._auto_start_cameras.setChecked(
+            bool(settings.get("auto_start_cameras", False))
+        )
 
     def _save(self):
         settings = save_ui_settings(
@@ -400,11 +585,18 @@ class SettingsPage(QWidget):
         self.settings_changed.emit(settings)
         self.camera_config_changed.emit(settings)
 
-    def _scan_cameras(self):
+    def scan_cameras(self):
+        import sys
         import cv2
+
+        def _get_capture(index: int):
+            if sys.platform == "win32":
+                return cv2.VideoCapture(index, cv2.CAP_ANY)
+            return cv2.VideoCapture(index)
+
         found = []
         for i in range(10):
-            cap = cv2.VideoCapture(i)
+            cap = _get_capture(i)
             if cap.isOpened():
                 found.append(i)
                 cap.release()
@@ -428,14 +620,15 @@ class AboutPage(QWidget):
         layout.setSpacing(20)
         layout.addLayout(
             _page_header(
-                "System Info", "Device status, model information, and runtime diagnostics"
+                "System Info",
+                "Device status, model information, and runtime diagnostics",
             )
         )
 
         info_box = QGroupBox("Runtime Information")
         info_layout = QGridLayout(info_box)
         info_layout.setSpacing(12)
-        
+
         self._info_labels = {}
         info_items = [
             ("device_label", "Processing Device"),
@@ -449,7 +642,7 @@ class AboutPage(QWidget):
             ("watchlist_label", "Watchlist"),
             ("outputs_label", "Outputs Directory"),
         ]
-        
+
         for idx, (key, label) in enumerate(info_items):
             key_label = QLabel(label)
             key_label.setObjectName("sectionLabel")
@@ -473,7 +666,7 @@ class AboutPage(QWidget):
 
     def refresh(self):
         status = dependency_status()
-        
+
         label_map = {
             "device": "device_label",
             "model_path": "model_path_label",
@@ -486,7 +679,7 @@ class AboutPage(QWidget):
             "watchlist": "watchlist_label",
             "outputs": "outputs_label",
         }
-        
+
         for key, label_key in label_map.items():
             if label_key in self._info_labels:
                 value = status.get(key, "N/A")
