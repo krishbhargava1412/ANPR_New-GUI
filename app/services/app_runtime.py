@@ -68,7 +68,9 @@ def load_ui_settings() -> dict[str, Any]:
     except (json.JSONDecodeError, OSError):
         return DEFAULT_UI_SETTINGS.copy()
     merged = DEFAULT_UI_SETTINGS.copy()
-    merged.update({key: value for key, value in data.items() if key in DEFAULT_UI_SETTINGS})
+    merged.update(
+        {key: value for key, value in data.items() if key in DEFAULT_UI_SETTINGS}
+    )
     return merged
 
 
@@ -143,12 +145,37 @@ def search_plate_log(
                 continue
             if watchlist_only and not entry["watchlist_hit"]:
                 continue
-            if from_dt and entry["timestamp_dt"] and entry["timestamp_dt"].date() < from_dt.date():
+            if (
+                from_dt
+                and entry["timestamp_dt"]
+                and entry["timestamp_dt"].date() < from_dt.date()
+            ):
                 continue
-            if to_dt and entry["timestamp_dt"] and entry["timestamp_dt"].date() > to_dt.date():
+            if (
+                to_dt
+                and entry["timestamp_dt"]
+                and entry["timestamp_dt"].date() > to_dt.date()
+            ):
                 continue
             matches.append(entry)
     return matches
+
+
+def clear_plate_log() -> None:
+    if PLATE_LOG_PATH.exists():
+        PLATE_LOG_PATH.unlink()
+
+
+def clear_outputs() -> int:
+    count = 0
+    if SNAPSHOT_DIR.exists():
+        for f in SNAPSHOT_DIR.glob("*.png"):
+            try:
+                f.unlink()
+                count += 1
+            except OSError:
+                pass
+    return count
 
 
 def dashboard_stats() -> dict[str, str]:
@@ -156,7 +183,9 @@ def dashboard_stats() -> dict[str, str]:
     detections = search_plate_log()
     unique_plates = len({entry["plate"] for entry in detections})
     watchlist_hits = sum(1 for entry in detections if entry["watchlist_hit"])
-    snapshot_count = len(list(SNAPSHOT_DIR.glob("*.png"))) if SNAPSHOT_DIR.exists() else 0
+    snapshot_count = (
+        len(list(SNAPSHOT_DIR.glob("*.png"))) if SNAPSHOT_DIR.exists() else 0
+    )
     latest = detections[-1]["timestamp"] if detections else "No detections yet"
     return {
         "detections": str(len(detections)),
@@ -206,5 +235,7 @@ def dependency_status() -> dict[str, str]:
         "outputs": str(OUTPUTS_DIR),
         "pipeline_batch": "Ready" if OLD_BATCH_ENTRY.exists() else "Missing",
         "pipeline_visualize": "Ready" if OLD_VISUALIZE_ENTRY.exists() else "Missing",
-        "pipeline_interpolate": "Ready" if OLD_INTERPOLATE_ENTRY.exists() else "Missing",
+        "pipeline_interpolate": "Ready"
+        if OLD_INTERPOLATE_ENTRY.exists()
+        else "Missing",
     }

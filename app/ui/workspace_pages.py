@@ -38,6 +38,8 @@ from app.services.app_runtime import (
     open_in_shell,
     save_ui_settings,
     search_plate_log,
+    clear_plate_log,
+    clear_outputs,
 )
 
 
@@ -104,6 +106,8 @@ class DashboardPage(QWidget):
         actions = QHBoxLayout()
         for text, handler in (
             ("REFRESH", self.refresh),
+            ("CLEAR LOG", self._clear_log),
+            ("CLEAR OUTPUTS", self._clear_outputs),
             ("OPEN OUTPUTS", lambda: open_in_shell(OUTPUTS_DIR)),
             ("OPEN WATCHLIST", lambda: open_in_shell(WATCHLIST_PATH)),
             ("OPEN LOG CSV", lambda: open_in_shell(PLATE_LOG_PATH)),
@@ -123,6 +127,14 @@ class DashboardPage(QWidget):
             label.setText(stats.get(key, "0"))
         self._latest_label.setText(f"Latest detection: {stats['latest']}")
 
+    def _clear_log(self):
+        clear_plate_log()
+        self.refresh()
+
+    def _clear_outputs(self):
+        count = clear_outputs()
+        self.refresh()
+
 
 class PipelinePage(QWidget):
     def __init__(self, parent=None):
@@ -135,7 +147,11 @@ class PipelinePage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 36)
         layout.setSpacing(20)
-        layout.addLayout(_page_header("Pipeline", "Check old batch-pipeline integration and runtime readiness"))
+        layout.addLayout(
+            _page_header(
+                "Pipeline", "Check old batch-pipeline integration and runtime readiness"
+            )
+        )
 
         self._status = QTextEdit()
         self._status.setReadOnly(True)
@@ -188,7 +204,11 @@ class HistoryPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(16)
-        layout.addLayout(_page_header("History", "Search detections, watchlist hits, and evidence snapshots"))
+        layout.addLayout(
+            _page_header(
+                "History", "Search detections, watchlist hits, and evidence snapshots"
+            )
+        )
 
         filters = QHBoxLayout()
         self._plate_edit = QLineEdit()
@@ -200,7 +220,13 @@ class HistoryPage(QWidget):
         self._to_edit = QLineEdit()
         self._to_edit.setPlaceholderText("To YYYY-MM-DD")
         self._watchlist_only = QCheckBox("Watchlist only")
-        for widget in (self._plate_edit, self._source_edit, self._from_edit, self._to_edit, self._watchlist_only):
+        for widget in (
+            self._plate_edit,
+            self._source_edit,
+            self._from_edit,
+            self._to_edit,
+            self._watchlist_only,
+        ):
             filters.addWidget(widget)
         search_btn = QPushButton("SEARCH")
         search_btn.setObjectName("primaryButton")
@@ -211,7 +237,9 @@ class HistoryPage(QWidget):
         splitter_row = QHBoxLayout()
 
         self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(["Timestamp", "Plate", "Source", "Confidence", "Watchlist"])
+        self._table.setHorizontalHeaderLabels(
+            ["Timestamp", "Plate", "Source", "Confidence", "Watchlist"]
+        )
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -292,11 +320,13 @@ class HistoryPage(QWidget):
         )
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
-            self._preview.setPixmap(pixmap.scaled(
-                self._preview.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            ))
+            self._preview.setPixmap(
+                pixmap.scaled(
+                    self._preview.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
             self._preview.setText("")
         else:
             self._preview.setPixmap(QPixmap())
@@ -324,7 +354,12 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
-        layout.addLayout(_page_header("Settings", "Detection, storage, and alert settings from the old workflow"))
+        layout.addLayout(
+            _page_header(
+                "Settings",
+                "Detection, storage, and alert settings from the old workflow",
+            )
+        )
 
         form_box = QGroupBox("Runtime")
         form = QFormLayout(form_box)
@@ -368,7 +403,9 @@ class SettingsPage(QWidget):
             ("OPEN OUTPUTS", lambda: open_in_shell(OUTPUTS_DIR)),
         ):
             btn = QPushButton(text)
-            btn.setObjectName("secondaryButton" if text != "SAVE SETTINGS" else "primaryButton")
+            btn.setObjectName(
+                "secondaryButton" if text != "SAVE SETTINGS" else "primaryButton"
+            )
             btn.clicked.connect(handler)
             row.addWidget(btn)
         row.addStretch()
@@ -405,7 +442,11 @@ class AboutPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
-        layout.addLayout(_page_header("About", "Diagnostics and integration checks for the old ANPR stack"))
+        layout.addLayout(
+            _page_header(
+                "About", "Diagnostics and integration checks for the old ANPR stack"
+            )
+        )
 
         self._grid = QGridLayout()
         self._grid.setHorizontalSpacing(18)
@@ -455,11 +496,15 @@ class UserManagementPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
-        layout.addLayout(_page_header("User Management", "Manage system users and roles"))
+        layout.addLayout(
+            _page_header("User Management", "Manage system users and roles")
+        )
 
         self._user_table = QTableWidget()
         self._user_table.setColumnCount(5)
-        self._user_table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Created At", "Last Login"])
+        self._user_table.setHorizontalHeaderLabels(
+            ["ID", "Username", "Role", "Created At", "Last Login"]
+        )
         self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         layout.addWidget(self._user_table)
@@ -498,6 +543,7 @@ class UserManagementPage(QWidget):
 
     def _refresh_users(self):
         from app.storage.database import get_all_users
+
         users = get_all_users()
         self._user_table.setRowCount(0)
         for user in users:
@@ -506,11 +552,28 @@ class UserManagementPage(QWidget):
             self._user_table.setItem(row, 0, QTableWidgetItem(str(user.id)))
             self._user_table.setItem(row, 1, QTableWidgetItem(user.username))
             self._user_table.setItem(row, 2, QTableWidgetItem(user.role))
-            self._user_table.setItem(row, 3, QTableWidgetItem(user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else ""))
-            self._user_table.setItem(row, 4, QTableWidgetItem(user.last_login.strftime("%Y-%m-%d %H:%M") if user.last_login else "Never"))
+            self._user_table.setItem(
+                row,
+                3,
+                QTableWidgetItem(
+                    user.created_at.strftime("%Y-%m-%d %H:%M")
+                    if user.created_at
+                    else ""
+                ),
+            )
+            self._user_table.setItem(
+                row,
+                4,
+                QTableWidgetItem(
+                    user.last_login.strftime("%Y-%m-%d %H:%M")
+                    if user.last_login
+                    else "Never"
+                ),
+            )
 
     def _on_add_user(self):
         from app.storage.database import create_user
+
         username = self._new_username.text().strip()
         password = self._new_password.text()
         role = self._new_role.text().strip().lower()
@@ -525,16 +588,21 @@ class UserManagementPage(QWidget):
 
         user = create_user(username, password, role)
         if user:
-            QMessageBox.information(self, "Success", f"User '{username}' created successfully")
+            QMessageBox.information(
+                self, "Success", f"User '{username}' created successfully"
+            )
             self._new_username.clear()
             self._new_password.clear()
             self._new_role.setText("user")
             self._refresh_users()
         else:
-            QMessageBox.warning(self, "Error", "Failed to create user. Username may already exist.")
+            QMessageBox.warning(
+                self, "Error", "Failed to create user. Username may already exist."
+            )
 
     def _on_delete_user(self):
         from app.storage.database import delete_user
+
         current_row = self._user_table.currentRow()
         if current_row < 0:
             QMessageBox.warning(self, "Error", "Please select a user to delete")
@@ -554,8 +622,10 @@ class UserManagementPage(QWidget):
             return
 
         reply = QMessageBox.question(
-            self, "Confirm Delete", f"Delete user '{username}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            self,
+            "Confirm Delete",
+            f"Delete user '{username}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -564,4 +634,3 @@ class UserManagementPage(QWidget):
                 self._refresh_users()
             else:
                 QMessageBox.warning(self, "Error", "Failed to delete user")
-

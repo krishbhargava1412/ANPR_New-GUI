@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.detection.plate_pipeline import DetectedBox, PlatePipeline, PlateResult
-from app.services.app_runtime import load_ui_settings
+from app.services.app_runtime import load_ui_settings, clear_plate_log
 from app.utils.log_panel import LogPanel
 
 
@@ -120,12 +120,20 @@ class FeedWidget(QLabel):
         self._entries.clear()
 
     def update_frame(self, frame: np.ndarray):
-        self._entries = [entry for entry in self._entries if not entry.is_expired(self._CONFIRMED_TTL_SEC)]
+        self._entries = [
+            entry
+            for entry in self._entries
+            if not entry.is_expired(self._CONFIRMED_TTL_SEC)
+        ]
         annotated = self._draw(frame)
         h, w, ch = annotated.shape
         qt_img = QImage(annotated.data, w, h, ch * w, QImage.Format.Format_BGR888)
         pixmap = QPixmap.fromImage(qt_img)
-        scaled = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+        scaled = pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
         self.setPixmap(scaled)
 
     def _draw(self, frame: np.ndarray) -> np.ndarray:
@@ -157,7 +165,16 @@ class FeedWidget(QLabel):
             (tw, th), _ = cv2.getTextSize(label, _FONT, _FONT_SCALE, _FONT_THICKNESS)
             bg_y1 = max(y1 - th - 8, 0)
             cv2.rectangle(out, (x1, bg_y1), (x1 + tw + 8, y1), color, -1)
-            cv2.putText(out, label, (x1 + 4, y1 - 4), _FONT, _FONT_SCALE, (0, 0, 0), _FONT_THICKNESS, cv2.LINE_AA)
+            cv2.putText(
+                out,
+                label,
+                (x1 + 4, y1 - 4),
+                _FONT,
+                _FONT_SCALE,
+                (0, 0, 0),
+                _FONT_THICKNESS,
+                cv2.LINE_AA,
+            )
         return out
 
 
@@ -184,14 +201,18 @@ class DetectionPage(QWidget):
         header_row = QHBoxLayout()
         title = QLabel("License Plate Detection")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Simultaneous multi-camera detection using the legacy ANPR backend")
+        subtitle = QLabel(
+            "Simultaneous multi-camera detection using the legacy ANPR backend"
+        )
         subtitle.setObjectName("pageSubtitle")
         title_col = QVBoxLayout()
         title_col.setSpacing(4)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
         header_row.addLayout(title_col)
-        header_row.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        header_row.addSpacerItem(
+            QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        )
         root.addLayout(header_row)
         root.addSpacing(20)
 
@@ -211,11 +232,21 @@ class DetectionPage(QWidget):
         self._start_btn.setEnabled(False)
         ctrl.addWidget(self._start_btn)
 
-        ctrl.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        ctrl.addSpacerItem(
+            QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        )
 
         self._status_label = QLabel("Idle")
         self._status_label.setObjectName("pageSubtitle")
         ctrl.addWidget(self._status_label)
+
+        self._log_panel = LogPanel()
+
+        clear_btn = QPushButton("CLEAR LOG")
+        clear_btn.setObjectName("secondaryButton")
+        clear_btn.setFixedHeight(36)
+        clear_btn.clicked.connect(self._on_clear_log)
+        ctrl.addWidget(clear_btn)
 
         root.addLayout(ctrl)
         root.addSpacing(16)
@@ -233,7 +264,6 @@ class DetectionPage(QWidget):
         self._feed = FeedWidget()
         splitter.addWidget(self._feed)
 
-        self._log_panel = LogPanel()
         self._log_panel.setMinimumWidth(280)
         splitter.addWidget(self._log_panel)
 
@@ -266,7 +296,9 @@ class DetectionPage(QWidget):
                 self._cam_combo.removeItem(combo_index)
                 break
         if self._active_camera == index:
-            self._active_camera = self._cam_combo.currentData() if self._cam_combo.count() else None
+            self._active_camera = (
+                self._cam_combo.currentData() if self._cam_combo.count() else None
+            )
             self._restore_selected_camera_state()
         self._start_btn.setEnabled(self._cam_combo.count() > 0)
         self._update_status_text()
@@ -281,7 +313,9 @@ class DetectionPage(QWidget):
         pipeline = self._pipelines.get(camera_index)
         if pipeline is None:
             return
-        self._frame_counters[camera_index] = self._frame_counters.get(camera_index, 0) + 1
+        self._frame_counters[camera_index] = (
+            self._frame_counters.get(camera_index, 0) + 1
+        )
         if self._frame_counters[camera_index] % self._frame_skip == 0:
             pipeline.submit_frame(camera_index, frame)
 
@@ -323,7 +357,9 @@ class DetectionPage(QWidget):
         pipeline = PlatePipeline()
         pipeline.boxes_detected.connect(self._on_boxes_detected)
         pipeline.result_ready.connect(self._on_results)
-        pipeline.status.connect(lambda message, cam=camera_index: self._on_pipeline_status(cam, message))
+        pipeline.status.connect(
+            lambda message, cam=camera_index: self._on_pipeline_status(cam, message)
+        )
         pipeline.configure(
             confidence_threshold=float(load_ui_settings()["confidence_threshold"]),
             save_snapshots=bool(load_ui_settings()["save_snapshots"]),
@@ -407,3 +443,7 @@ class DetectionPage(QWidget):
     def closeEvent(self, event):
         self._stop_all_pipelines()
         super().closeEvent(event)
+
+    def _on_clear_log(self):
+        clear_plate_log()
+        self._log_panel.clear()
