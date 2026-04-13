@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import enum
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpacerItem,
@@ -34,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.detection.plate_pipeline import DetectedBox, PlatePipeline, PlateResult
+from app.detection.legacy_backend import append_plate_log, next_snapshot_path, save_plate_snapshot
 from app.services.app_runtime import load_ui_settings, clear_plate_log
 from app.utils.log_panel import LogPanel
 
@@ -95,7 +98,7 @@ class FeedWidget(QLabel):
         super().__init__(parent)
         self.setObjectName("feedWidget")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setText("NO FEED\n\nAdd cameras and press START ALL")
+        self.setText("NO FEED\n\nSave cameras in Settings and press START DETECTION")
         self.setMinimumSize(QSize(480, 320))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._entries: list[_BoxEntry] = []
@@ -209,9 +212,12 @@ class DetectionPage(QWidget):
         self._last_boxes: dict[int, list[DetectedBox]] = {}
         self._last_results: dict[int, list[PlateResult]] = {}
         self._camera_status: dict[int, str] = {}
+        self._source_labels: dict[int, str] = {}
         self._registered_cameras: list[int] = []
         self._active_camera: int | None = None
         self._running = False
+        self._review_in_progress = False
+        self._pending_results: list[PlateResult] = []
         self._frame_skip = int(load_ui_settings()["frame_skip"])
         self._build_ui()
 
@@ -287,10 +293,13 @@ class DetectionPage(QWidget):
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, stretch=1)
 
-    def register_camera(self, index: int):
+    def register_camera(self, index: int, label: str | None = None):
         if index in self._registered_cameras:
+            if label:
+                self._source_labels[index] = label
             return
         self._registered_cameras.append(index)
+        self._source_labels[index] = label or f"CAM {index}"
         self._camera_status[index] = "Idle"
         self._start_btn.setEnabled(True)
         if self._active_camera is None:
@@ -307,6 +316,7 @@ class DetectionPage(QWidget):
         self._last_boxes.pop(index, None)
         self._last_results.pop(index, None)
         self._camera_status.pop(index, None)
+        self._source_labels.pop(index, None)
         if index in self._registered_cameras:
             self._registered_cameras.remove(index)
         if self._active_camera == index:
@@ -331,14 +341,19 @@ class DetectionPage(QWidget):
             self._frame_counters.get(camera_index, 0) + 1
         )
         if self._frame_counters[camera_index] % self._frame_skip == 0:
-            pipeline.submit_frame(camera_index, frame)
+            if self._review_in_progress:
+                return
+            pipeline.submit_frame(
+                camera_index,
+                frame,
+                self._source_labels.get(camera_index, f"CAM {camera_index}"),
+            )
 
     def apply_runtime_settings(self, settings: dict[str, object]):
         self._frame_skip = max(1, int(settings.get("frame_skip", self._frame_skip)))
         for pipeline in self._pipelines.values():
             pipeline.configure(
                 confidence_threshold=float(settings.get("confidence_threshold", 0.5)),
-                save_snapshots=bool(settings.get("save_snapshots", True)),
             )
 
     def _toggle_detection(self):
@@ -368,8 +383,10 @@ class DetectionPage(QWidget):
         for camera_index in list(self._pipelines):
             self._stop_pipeline_for_camera(camera_index)
         self._running = False
+        self._pending_results.clear()
+        self._review_in_progress = False
         self._feed.clear_boxes()
-        self._start_btn.setText("START ALL")
+        self._start_btn.setText("START DETECTION")
         self._update_status_text()
 
     def _start_pipeline_for_camera(self, camera_index: int):
@@ -383,7 +400,6 @@ class DetectionPage(QWidget):
         )
         pipeline.configure(
             confidence_threshold=float(load_ui_settings()["confidence_threshold"]),
-            save_snapshots=bool(load_ui_settings()["save_snapshots"]),
         )
         self._pipelines[camera_index] = pipeline
         self._frame_counters[camera_index] = 0
@@ -402,7 +418,7 @@ class DetectionPage(QWidget):
     def _restore_selected_camera_state(self):
         if self._active_camera is None:
             self._feed.clear_boxes()
-            self._feed.setText("NO FEED\n\nAdd cameras from Cameras page")
+            self._feed.setText("NO FEED\n\nSave local or IP/RTSP cameras in Settings")
             return
         boxes = self._last_boxes.get(self._active_camera, [])
         results = self._last_results.get(self._active_camera, [])
@@ -427,32 +443,93 @@ class DetectionPage(QWidget):
     def _on_results(self, results: list[PlateResult]):
         if not results:
             return
-        camera_index = results[0].camera_index
-        self._last_results[camera_index] = results
-        if camera_index == self._active_camera:
-            self._feed.set_confirmed(results)
-            frame = self._latest_frames.get(camera_index)
-            if frame is not None:
-                self._feed.update_frame(frame)
-        self._log_panel.add_results(results)
-        self._camera_status[camera_index] = f"Confirmed {len(results)} plate(s)"
-        self._update_status_text()
+        self._pending_results.extend(results)
+        self._set_pipeline_pause(True)
+        if not self._review_in_progress:
+            self._process_pending_results()
 
     def _on_pipeline_status(self, camera_index: int, message: str):
         self._camera_status[camera_index] = message
         self._update_status_text()
 
+    def _set_pipeline_pause(self, paused: bool):
+        for pipeline in self._pipelines.values():
+            pipeline.set_paused(paused)
+
+    def _process_pending_results(self):
+        if self._review_in_progress:
+            return
+        if not self._pending_results:
+            self._set_pipeline_pause(False)
+            return
+
+        self._review_in_progress = True
+        result = self._pending_results.pop(0)
+        camera_index = result.camera_index
+        self._camera_status[camera_index] = f"Waiting to save {result.text}"
+        self._update_status_text()
+        self._last_results[camera_index] = [result]
+        if camera_index == self._active_camera:
+            self._feed.set_confirmed([result])
+            frame = self._latest_frames.get(camera_index)
+            if frame is not None:
+                self._feed.update_frame(frame)
+
+        saved_snapshot = ""
+        if bool(load_ui_settings().get("save_snapshots", True)):
+            decision = QMessageBox(self)
+            decision.setIcon(QMessageBox.Icon.Question)
+            decision.setWindowTitle("Save Snapshot")
+            decision.setText(f"Detected plate {result.text} from {result.source}.")
+            decision.setInformativeText(
+                "Save this snapshot now? Detection will resume after you save or skip this plate."
+            )
+            save_button = decision.addButton(
+                "Save Snapshot", QMessageBox.ButtonRole.AcceptRole
+            )
+            skip_button = decision.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
+            decision.setDefaultButton(save_button)
+            decision.exec()
+            if decision.clickedButton() == save_button:
+                snapshot_path = next_snapshot_path(result.text, result.source)
+                saved_path = save_plate_snapshot(result.plate_crop, snapshot_path)
+                saved_snapshot = str(saved_path or "")
+
+        result.snapshot_path = saved_snapshot
+        append_plate_log(
+            result.text,
+            source=result.source,
+            confidence=result.confidence,
+            snapshot_path=None if not saved_snapshot else Path(saved_snapshot),
+            watchlist_hit=result.watchlist_hit,
+        )
+        self._log_panel.add_results([result])
+        self._camera_status[camera_index] = (
+            f"Snapshot saved for {result.text}"
+            if saved_snapshot
+            else f"Skipped snapshot for {result.text}"
+        )
+        self._update_status_text()
+
+        self._review_in_progress = False
+        if self._pending_results:
+            self._process_pending_results()
+        else:
+            self._set_pipeline_pause(False)
+
     def _update_status_text(self):
         if len(self._registered_cameras) == 0:
             self._status_label.setText(
-                "No cameras registered - Add cameras from Cameras page"
+                "No cameras registered - Save local or IP/RTSP cameras in Settings"
             )
             return
-        active_count = len(self._pipelines)
         if self._active_camera is not None:
             status = self._camera_status.get(int(self._active_camera), "Idle")
+            source_label = self._source_labels.get(
+                int(self._active_camera), f"CAM {self._active_camera}"
+            )
             self._status_label.setText(
-                f"Active: {len(self._registered_cameras)} camera(s) | Detection: {'Running' if self._running else 'Stopped'} | Viewing CAM {self._active_camera} | {status}"
+                f"Active: {len(self._registered_cameras)} camera(s) | Detection: {'Running' if self._running else 'Stopped'} | Viewing {source_label} | {status}"
             )
         else:
             self._status_label.setText(

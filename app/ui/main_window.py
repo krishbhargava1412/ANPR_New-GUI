@@ -14,8 +14,9 @@ from PyQt6.QtWidgets import (
     QLineEdit,
 )
 
-from app.camera.camera_page import CameraPage
+from app.camera.camera_worker import CameraWorker
 from app.detection.detection_page import DetectionPage
+from app.services.app_runtime import get_saved_camera_sources, load_ui_settings
 from app.ui.sidebar import Sidebar
 from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage
 from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
@@ -51,6 +52,8 @@ class MainWindow(QMainWindow):
         self._create_menu_bar()
         self._build_ui()
         self._initialize_runtime()
+        self._camera_workers: dict[int, CameraWorker] = {}
+        self._apply_saved_camera_config(load_ui_settings())
         self._check_authentication()
 
     def _initialize_runtime(self):
@@ -79,8 +82,6 @@ class MainWindow(QMainWindow):
         if show_login_dialog(self):
             self._update_user_menu()
             self.statusBar().showMessage("Login successful")
-            if hasattr(self, "_settings_page") and self._settings_page:
-                self._settings_page.scan_cameras()
         else:
             QMessageBox.warning(
                 self,
@@ -199,35 +200,39 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def _on_camera_config_changed(self, settings: dict):
-        from app.camera.camera_worker import CameraWorker
-
-        camera_indices = settings.get("camera_indices", "")
-        auto_start = settings.get("auto_start_cameras", False)
-
-        if not hasattr(self, "_camera_workers"):
-            self._camera_workers = {}
-
-        if camera_indices:
-            try:
-                indices = [
-                    int(x.strip()) for x in camera_indices.split(",") if x.strip()
-                ]
-                for idx in indices:
-                    if idx not in self._camera_workers:
-                        worker = CameraWorker(camera_index=idx, fps=30)
-                        worker.frame_ready.connect(self._detection_page.on_frame_ready)
-                        worker.start()
-                        self._camera_workers[idx] = worker
-                    self._detection_page.register_camera(idx)
-
-                if auto_start and indices:
-                    self._detection_page.start_detection()
-            except ValueError:
-                pass
+        self._apply_saved_camera_config(settings)
 
     def _on_settings_changed(self, settings: dict):
         self._detection_page.apply_runtime_settings(settings)
         self._about_page.refresh()
+
+    def _apply_saved_camera_config(self, settings: dict):
+        desired_sources = get_saved_camera_sources(settings)
+        desired_ids = {int(entry["camera_id"]) for entry in desired_sources}
+
+        for camera_id in list(self._camera_workers):
+            if camera_id in desired_ids:
+                continue
+            self._camera_workers[camera_id].stop()
+            self._camera_workers.pop(camera_id, None)
+            self._detection_page.unregister_camera(camera_id)
+
+        for entry in desired_sources:
+            camera_id = int(entry["camera_id"])
+            if camera_id not in self._camera_workers:
+                worker = CameraWorker(
+                    camera_index=camera_id,
+                    fps=30,
+                    source=entry["source"],
+                    display_name=str(entry["label"]),
+                )
+                worker.frame_ready.connect(self._detection_page.on_frame_ready)
+                self._camera_workers[camera_id] = worker
+                worker.start()
+            self._detection_page.register_camera(camera_id, str(entry["label"]))
+
+        if bool(settings.get("auto_start_cameras", False)) and desired_sources:
+            self._detection_page.start_detection()
 
     def _switch_page(self, page_id: str):
         if not is_authenticated():
@@ -245,3 +250,8 @@ class MainWindow(QMainWindow):
         elif page_id == "about":
             self._about_page.refresh()
         self.statusBar().showMessage(page_id.upper())
+
+    def closeEvent(self, event):
+        for worker in self._camera_workers.values():
+            worker.stop()
+        super().closeEvent(event)

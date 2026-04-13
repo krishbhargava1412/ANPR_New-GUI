@@ -43,6 +43,10 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "frame_skip": 5,
     "save_snapshots": True,
     "watchlist_alerts_enabled": True,
+    "camera_indices": "",
+    "default_camera": -1,
+    "auto_start_cameras": False,
+    "ip_camera_urls": "",
 }
 
 
@@ -73,6 +77,60 @@ def save_ui_settings(settings: dict[str, Any]) -> dict[str, Any]:
     merged.update(settings)
     SETTINGS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return merged
+
+
+def parse_camera_indices(raw_value: str) -> list[int]:
+    indices: list[int] = []
+    for chunk in raw_value.replace("\n", ",").split(","):
+        value = chunk.strip()
+        if not value:
+            continue
+        try:
+            index = int(value)
+        except ValueError:
+            continue
+        if index not in indices:
+            indices.append(index)
+    return indices
+
+
+def parse_ip_camera_urls(raw_value: str) -> list[str]:
+    urls: list[str] = []
+    for line in raw_value.splitlines():
+        value = line.strip()
+        if not value or value in urls:
+            continue
+        urls.append(value)
+    return urls
+
+
+def get_saved_camera_sources(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    settings = settings or load_ui_settings()
+    sources: list[dict[str, Any]] = []
+
+    for index in parse_camera_indices(str(settings.get("camera_indices", ""))):
+        sources.append(
+            {
+                "camera_id": index,
+                "source": index,
+                "label": f"CAM {index}",
+                "kind": "local",
+            }
+        )
+
+    for offset, url in enumerate(
+        parse_ip_camera_urls(str(settings.get("ip_camera_urls", ""))), start=1
+    ):
+        sources.append(
+            {
+                "camera_id": 1000 + offset,
+                "source": url,
+                "label": f"IP Camera {offset}",
+                "kind": "ip",
+            }
+        )
+
+    return sources
 
 
 def parse_plate_log_row(row: list[str]) -> dict[str, Any] | None:

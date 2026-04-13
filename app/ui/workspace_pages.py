@@ -292,6 +292,7 @@ class SettingsPage(QWidget):
         self._save_snapshots = None
         self._watchlist_alerts = None
         self._camera_indices = None
+        self._ip_camera_urls = None
         self._default_camera = None
         self._auto_start_cameras = None
         self._scan_cameras_btn = None
@@ -334,13 +335,21 @@ class SettingsPage(QWidget):
                     self._create_line_edit("e.g., 0,1,2", "camera_indices"),
                 ),
                 (
+                    "IP / RTSP URLs",
+                    self._create_text_edit(
+                        "One source per line, e.g.\nrtsp://user:pass@192.168.1.10/stream",
+                        "ip_camera_urls",
+                    ),
+                ),
+                (
                     "Default Camera",
                     self._create_spin_box(-1, 10, "default_camera", "None"),
                 ),
                 (
                     "Auto-start",
                     self._create_checkbox(
-                        "Auto-start cameras on detection", "auto_start_cameras"
+                        "Auto-load saved cameras and start detection on launch",
+                        "auto_start_cameras",
                     ),
                 ),
             ],
@@ -368,7 +377,8 @@ class SettingsPage(QWidget):
                 (
                     "Save Snapshots",
                     self._create_checkbox(
-                        "Save detected plate snapshots", "save_snapshots"
+                        "Ask before saving each confirmed plate snapshot",
+                        "save_snapshots"
                     ),
                 ),
                 (
@@ -521,6 +531,26 @@ class SettingsPage(QWidget):
         setattr(self, f"_{attr_name}", chk)
         return chk
 
+    def _create_text_edit(self, placeholder: str, attr_name: str) -> QTextEdit:
+        edit = QTextEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.setFixedHeight(88)
+        edit.setStyleSheet("""
+            QTextEdit {
+                background-color: #0d0d0d;
+                border: 1px solid #1e1e1e;
+                border-radius: 6px;
+                padding: 10px 14px;
+                color: #888888;
+                font-size: 12px;
+            }
+            QTextEdit:focus {
+                border-color: #444444;
+            }
+        """)
+        setattr(self, f"_{attr_name}", edit)
+        return edit
+
     def _create_scan_section(self) -> QWidget:
         widget = QWidget()
         container = QHBoxLayout(widget)
@@ -532,7 +562,9 @@ class SettingsPage(QWidget):
         self._scan_cameras_btn.clicked.connect(self.scan_cameras)
         container.addWidget(self._scan_cameras_btn)
 
-        self._camera_status_label = QLabel("Click scan to detect available cameras")
+        self._camera_status_label = QLabel(
+            "Saved sources load automatically. Scan only to discover local cameras."
+        )
         self._camera_status_label.setStyleSheet("color: #444444; font-size: 11px;")
         container.addWidget(self._camera_status_label)
         container.addStretch()
@@ -565,6 +597,7 @@ class SettingsPage(QWidget):
 
         indices = settings.get("camera_indices", "")
         self._camera_indices.setText(indices)
+        self._ip_camera_urls.setPlainText(str(settings.get("ip_camera_urls", "")))
         self._default_camera.setValue(int(settings.get("default_camera", -1)))
         self._auto_start_cameras.setChecked(
             bool(settings.get("auto_start_cameras", False))
@@ -578,6 +611,7 @@ class SettingsPage(QWidget):
                 "save_snapshots": bool(self._save_snapshots.isChecked()),
                 "watchlist_alerts_enabled": bool(self._watchlist_alerts.isChecked()),
                 "camera_indices": self._camera_indices.text().strip(),
+                "ip_camera_urls": self._ip_camera_urls.toPlainText().strip(),
                 "default_camera": int(self._default_camera.value()),
                 "auto_start_cameras": bool(self._auto_start_cameras.isChecked()),
             }

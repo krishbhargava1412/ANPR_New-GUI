@@ -16,18 +16,28 @@ class CameraWorker(QThread):
 
     _CONSECUTIVE_FAIL_LIMIT = 10
 
-    def __init__(self, camera_index: int, fps: int = 30, parent=None):
+    def __init__(
+        self,
+        camera_index: int,
+        fps: int = 30,
+        parent=None,
+        *,
+        source: int | str | None = None,
+        display_name: str | None = None,
+    ):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.source = camera_index if source is None else source
+        self.display_name = display_name or f"Camera {camera_index}"
         self._fps = max(1, fps)
         self._running = False
         self._mutex = QMutex()
 
     def run(self):
-        cap = cv2.VideoCapture(self.camera_index)
+        cap = self._open_capture()
 
         if not cap.isOpened():
-            self.error.emit(self.camera_index, f"Cannot open camera {self.camera_index}")
+            self.error.emit(self.camera_index, f"Cannot open {self.display_name}")
             return
 
         cap.set(cv2.CAP_PROP_FPS, self._fps)
@@ -47,7 +57,10 @@ class CameraWorker(QThread):
             if not ret:
                 consecutive_failures += 1
                 if consecutive_failures >= self._CONSECUTIVE_FAIL_LIMIT:
-                    self.error.emit(self.camera_index, f"Camera {self.camera_index} read failed {consecutive_failures} times")
+                    self.error.emit(
+                        self.camera_index,
+                        f"{self.display_name} read failed {consecutive_failures} times",
+                    )
                     break
                 self.msleep(interval_ms)
                 continue
@@ -62,3 +75,8 @@ class CameraWorker(QThread):
         with QMutexLocker(self._mutex):
             self._running = False
         self.wait()
+
+    def _open_capture(self):
+        if isinstance(self.source, int):
+            return cv2.VideoCapture(self.source, cv2.CAP_ANY)
+        return cv2.VideoCapture(str(self.source))
