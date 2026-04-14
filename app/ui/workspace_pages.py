@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
     QWidget,
     QDoubleSpinBox,
     QMessageBox,
+    QFileDialog,
+    QComboBox,
 )
 
 from app.services.app_runtime import (
@@ -283,6 +285,7 @@ class HistoryPage(QWidget):
 class SettingsPage(QWidget):
     settings_changed = pyqtSignal(dict)
     camera_config_changed = pyqtSignal(dict)
+    theme_changed = pyqtSignal(str)  # Emits 'dark' or 'light'
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -297,6 +300,8 @@ class SettingsPage(QWidget):
         self._auto_start_cameras = None
         self._scan_cameras_btn = None
         self._camera_status_label = None
+        self._theme_combo = None
+        self._path_edits = {}
         self._build_ui()
         self._load()
 
@@ -309,7 +314,7 @@ class SettingsPage(QWidget):
         header.setSpacing(4)
         title = QLabel("Settings")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Configure detection, cameras, storage, and alerts")
+        subtitle = QLabel("Configure detection, cameras, storage, alerts, and appearance")
         subtitle.setObjectName("pageSubtitle")
         header.addWidget(title)
         header.addWidget(subtitle)
@@ -325,6 +330,15 @@ class SettingsPage(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(16)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Theme card
+        theme_card = self._create_card(
+            "Appearance",
+            [
+                ("Theme", self._create_theme_selector()),
+            ],
+        )
+        scroll_layout.addWidget(theme_card)
 
         camera_card = self._create_card(
             "Camera Configuration",
@@ -392,12 +406,12 @@ class SettingsPage(QWidget):
         scroll_layout.addWidget(storage_card)
 
         paths_card = self._create_card(
-            "Paths",
+            "Paths & Storage Locations",
             [
-                ("Settings", self._create_path_display(SETTINGS_PATH)),
-                ("Watchlist", self._create_path_display(WATCHLIST_PATH)),
-                ("Plate Log", self._create_path_display(PLATE_LOG_PATH)),
-                ("Snapshots", self._create_path_display(SNAPSHOT_DIR)),
+                ("Settings", self._create_editable_path_display("Settings", SETTINGS_PATH)),
+                ("Watchlist", self._create_editable_path_display("Watchlist", WATCHLIST_PATH)),
+                ("Plate Log", self._create_editable_path_display("Plate Log", PLATE_LOG_PATH)),
+                ("Snapshots", self._create_editable_path_display("Snapshots", SNAPSHOT_DIR)),
             ],
         )
         scroll_layout.addWidget(paths_card)
@@ -425,9 +439,7 @@ class SettingsPage(QWidget):
         layout.setSpacing(16)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(
-            "color: #666666; font-size: 11px; letter-spacing: 1.5px; font-weight: 600;"
-        )
+        title_label.setObjectName("sectionLabel")
         layout.addWidget(title_label)
 
         for label, widget in fields:
@@ -435,7 +447,7 @@ class SettingsPage(QWidget):
             row.setSpacing(16)
 
             lbl = QLabel(label)
-            lbl.setStyleSheet("color: #666666; font-size: 11px;")
+            lbl.setObjectName("settingsFieldLabel")
             lbl.setMinimumWidth(140)
 
             row.addWidget(lbl)
@@ -447,19 +459,6 @@ class SettingsPage(QWidget):
     def _create_line_edit(self, placeholder: str, attr_name: str) -> QLineEdit:
         edit = QLineEdit()
         edit.setPlaceholderText(placeholder)
-        edit.setStyleSheet("""
-            QLineEdit {
-                background-color: #0d0d0d;
-                border: 1px solid #1e1e1e;
-                border-radius: 6px;
-                padding: 10px 14px;
-                color: #888888;
-                font-size: 12px;
-            }
-            QLineEdit:focus {
-                border-color: #444444;
-            }
-        """)
         setattr(self, f"_{attr_name}", edit)
         return edit
 
@@ -470,19 +469,6 @@ class SettingsPage(QWidget):
         spin.setRange(min_val, max_val)
         if special:
             spin.setSpecialValueText(special)
-        spin.setStyleSheet("""
-            QSpinBox {
-                background-color: #0d0d0d;
-                border: 1px solid #1e1e1e;
-                border-radius: 6px;
-                padding: 10px 14px;
-                color: #888888;
-                font-size: 12px;
-            }
-            QSpinBox:focus {
-                border-color: #444444;
-            }
-        """)
         setattr(self, f"_{attr_name}", spin)
         return spin
 
@@ -493,41 +479,11 @@ class SettingsPage(QWidget):
         spin.setRange(min_val, max_val)
         spin.setDecimals(2)
         spin.setSingleStep(step)
-        spin.setStyleSheet("""
-            QDoubleSpinBox {
-                background-color: #0d0d0d;
-                border: 1px solid #1e1e1e;
-                border-radius: 6px;
-                padding: 10px 14px;
-                color: #888888;
-                font-size: 12px;
-            }
-            QDoubleSpinBox:focus {
-                border-color: #444444;
-            }
-        """)
         setattr(self, f"_{attr_name}", spin)
         return spin
 
     def _create_checkbox(self, text: str, attr_name: str) -> QCheckBox:
         chk = QCheckBox(text)
-        chk.setStyleSheet("""
-            QCheckBox {
-                color: #666666;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid #333333;
-                background-color: #0d0d0d;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #e8ff00;
-                border-color: #e8ff00;
-            }
-        """)
         setattr(self, f"_{attr_name}", chk)
         return chk
 
@@ -535,21 +491,22 @@ class SettingsPage(QWidget):
         edit = QTextEdit()
         edit.setPlaceholderText(placeholder)
         edit.setFixedHeight(88)
-        edit.setStyleSheet("""
-            QTextEdit {
-                background-color: #0d0d0d;
-                border: 1px solid #1e1e1e;
-                border-radius: 6px;
-                padding: 10px 14px;
-                color: #888888;
-                font-size: 12px;
-            }
-            QTextEdit:focus {
-                border-color: #444444;
-            }
-        """)
         setattr(self, f"_{attr_name}", edit)
         return edit
+
+    def _create_theme_selector(self) -> QWidget:
+        """Create a theme selector combo box."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(["Dark", "Light"])
+        layout.addWidget(self._theme_combo)
+        layout.addStretch()
+
+        return widget
 
     def _create_scan_section(self) -> QWidget:
         widget = QWidget()
@@ -565,29 +522,59 @@ class SettingsPage(QWidget):
         self._camera_status_label = QLabel(
             "Saved sources load automatically. Scan only to discover local cameras."
         )
-        self._camera_status_label.setStyleSheet("color: #444444; font-size: 11px;")
+        self._camera_status_label.setObjectName("pageSubtitle")
         container.addWidget(self._camera_status_label)
         container.addStretch()
 
         return widget
 
-    def _create_path_display(self, path) -> QLineEdit:
+    def _create_editable_path_display(self, path_name: str, path: Path) -> QWidget:
+        """Create an editable path display with a browse button."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
         edit = QLineEdit(str(path))
         edit.setReadOnly(True)
-        edit.setStyleSheet("""
-            QLineEdit {
-                background-color: #0d0d0d;
-                border: 1px solid #1e1e1e;
-                border-radius: 6px;
-                padding: 10px 14px;
-                color: #444444;
-                font-size: 11px;
-            }
-        """)
-        return edit
+        edit.setObjectName("pathDisplay")
+        self._path_edits[path_name] = edit
+        layout.addWidget(edit)
+
+        browse_btn = QPushButton("Browse...")
+        browse_btn.setObjectName("secondaryButton")
+        browse_btn.setMaximumWidth(100)
+        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse_btn.clicked.connect(
+            lambda: self._browse_for_path(path_name, edit)
+        )
+        layout.addWidget(browse_btn)
+
+        return widget
+
+    def _browse_for_path(self, path_name: str, edit: QLineEdit):
+        """Open file dialog to browse for a path."""
+        current_path = edit.text()
+        selected_path = QFileDialog.getExistingDirectory(
+            self,
+            f"Select {path_name} Directory",
+            current_path if current_path else str(Path.home()),
+            QFileDialog.Option.ShowDirsOnly
+        )
+        if selected_path:
+            edit.setText(selected_path)
 
     def _load(self):
         settings = load_ui_settings()
+        
+        # Load theme preference
+        theme = settings.get("theme", "dark").lower()
+        if theme == "light":
+            self._theme_combo.setCurrentIndex(1)
+        else:
+            self._theme_combo.setCurrentIndex(0)
+        
+        # Load other settings
         self._confidence.setValue(float(settings.get("confidence_threshold", 0.5)))
         self._frame_skip.setValue(int(settings.get("frame_skip", 5)))
         self._save_snapshots.setChecked(bool(settings.get("save_snapshots", True)))
@@ -604,6 +591,8 @@ class SettingsPage(QWidget):
         )
 
     def _save(self):
+        theme_text = self._theme_combo.currentText().lower()
+        
         settings = save_ui_settings(
             {
                 "confidence_threshold": float(self._confidence.value()),
@@ -614,10 +603,13 @@ class SettingsPage(QWidget):
                 "ip_camera_urls": self._ip_camera_urls.toPlainText().strip(),
                 "default_camera": int(self._default_camera.value()),
                 "auto_start_cameras": bool(self._auto_start_cameras.isChecked()),
+                "theme": theme_text,
             }
         )
+        
         self.settings_changed.emit(settings)
         self.camera_config_changed.emit(settings)
+        self.theme_changed.emit(theme_text)
 
     def scan_cameras(self):
         import sys
@@ -639,6 +631,7 @@ class SettingsPage(QWidget):
             self._camera_indices.setText(",".join(map(str, found)))
         else:
             self._camera_status_label.setText("No cameras found")
+
 
 
 class AboutPage(QWidget):
