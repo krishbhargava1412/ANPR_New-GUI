@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import traceback
 
 import numpy as np
 from PyQt6.QtCore import QMutex, QMutexLocker, QThread, pyqtSignal
@@ -15,6 +16,7 @@ from app.detection.legacy_backend import (
     get_reader,
     is_watchlist_hit,
     loaded_model_path,
+    validate_detection_runtime,
 )
 from app.services.app_runtime import load_ui_settings
 
@@ -83,6 +85,7 @@ class PlatePipeline(QThread):
         self.status.emit("Loading detection runtime...")
         try:
             ensure_runtime_dirs()
+            validate_detection_runtime()
             settings = load_ui_settings()
             self.configure(
                 confidence_threshold=float(settings["confidence_threshold"]),
@@ -90,7 +93,9 @@ class PlatePipeline(QThread):
             self._model = get_plate_model()
             self._reader = get_reader()
         except Exception as exc:  # noqa: BLE001
-            self.status.emit(f"Runtime load failed: {exc}")
+            details = f"{type(exc).__name__}: {exc}".strip()
+            self.status.emit(f"Runtime load failed: {details}")
+            traceback.print_exc()
             return
 
         self.status.emit(f"Detection ready | model: {loaded_model_path()}")

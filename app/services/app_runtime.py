@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.metadata
 import importlib.util
 import json
 from datetime import datetime
@@ -14,11 +15,14 @@ from app.storage import (
     get_plate_log_path,
     ensure_storage_dirs,
     get_db_path,
-    get_easyocr_dir,
+    get_awiros_anpr_dir,
 )
 
 from app.detection.legacy_backend import (
     DEFAULT_CONFIDENCE_THRESHOLD,
+    PADDLEOCR_SOURCE_DIR,
+    _prepare_paddle_windows_runtime,
+    current_runtime_devices,
     ensure_runtime_dirs,
     loaded_model_path,
 )
@@ -26,7 +30,7 @@ from app.detection.legacy_backend import (
 
 OUTPUTS_DIR = get_snapshots_dir()
 OUTPUT_LOG_DIR = get_logs_dir()
-OCR_DIR = get_easyocr_dir()
+OCR_DIR = get_awiros_anpr_dir()
 SNAPSHOT_DIR = get_snapshots_dir()
 WATCHLIST_PATH = get_watchlist_path()
 PLATE_LOG_PATH = get_plate_log_path()
@@ -245,25 +249,65 @@ def dependency_status() -> dict[str, str]:
         model_path = Path(str(exc))
     packages = {
         "opencv": importlib.util.find_spec("cv2") is not None,
-        "easyocr": importlib.util.find_spec("easyocr") is not None,
+        "paddle": importlib.util.find_spec("paddle") is not None,
+        "safetensors": importlib.util.find_spec("safetensors") is not None,
         "torch": importlib.util.find_spec("torch") is not None,
         "ultralytics": importlib.util.find_spec("ultralytics") is not None,
     }
     device = "CPU"
+    yolo_device = "CPU"
+    ocr_device = "CPU"
     torch_message = "torch not installed"
     if packages["torch"]:
         import torch
 
         try:
             if torch.cuda.is_available():
-                device = f"CUDA ({torch.cuda.get_device_name(0)})"
+                yolo_device = f"CUDA ({torch.cuda.get_device_name(0)})"
             else:
                 mps = getattr(torch.backends, "mps", None)
                 if mps is not None and torch.backends.mps.is_available():
-                    device = "MPS"
+                    yolo_device = "MPS"
         except Exception:
-            device = "CPU"
+            yolo_device = "CPU"
         torch_message = f"torch {torch.__version__}"
+        if "+cpu" in torch.__version__:
+            torch_message += " (CPU build)"
+
+    paddle_message = "paddle not installed"
+    if packages["paddle"]:
+        try:
+            _prepare_paddle_windows_runtime()
+            import paddle
+
+            try:
+                if paddle.is_compiled_with_cuda():
+                    ocr_device = "CUDA"
+                else:
+                    ocr_device = "CPU"
+            except Exception:
+                ocr_device = "CPU"
+            paddle_message = f"paddle {paddle.__version__}"
+            if ocr_device == "CPU":
+                paddle_message += " (CPU build)"
+        except Exception as exc:
+            ocr_device = "GPU" if "gpu" in current_runtime_devices().get("ocr", "") else "CPU"
+            try:
+                paddle_message = (
+                    f"paddle-gpu {importlib.metadata.version('paddlepaddle-gpu')}"
+                )
+            except importlib.metadata.PackageNotFoundError:
+                paddle_message = "paddle installed"
+            if ocr_device == "GPU":
+                paddle_message += " (worker-mode GPU runtime)"
+            else:
+                paddle_message += f" (import issue: {type(exc).__name__})"
+
+    try:
+        runtime_devices = current_runtime_devices()
+        device = f"YOLO: {runtime_devices['yolo']} | OCR: {runtime_devices['ocr']}"
+    except Exception:
+        device = f"YOLO: {yolo_device} | OCR: {ocr_device}"
 
     return {
         "model_path": str(model_path),
@@ -272,7 +316,9 @@ def dependency_status() -> dict[str, str]:
         "device": device,
         "torch": torch_message,
         "opencv": "Installed" if packages["opencv"] else "Missing",
-        "easyocr": "Installed" if packages["easyocr"] else "Missing",
+        "awiros_anpr": "Ready" if PADDLEOCR_SOURCE_DIR.exists() else "Missing Source",
+        "paddle": paddle_message,
+        "safetensors": "Installed" if packages["safetensors"] else "Missing",
         "ultralytics": "Installed" if packages["ultralytics"] else "Missing",
         "plate_log": str(PLATE_LOG_PATH),
         "watchlist": str(WATCHLIST_PATH),
