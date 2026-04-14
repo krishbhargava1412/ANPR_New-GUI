@@ -20,6 +20,7 @@ from app.services.app_runtime import get_saved_camera_sources, load_ui_settings
 from app.ui.sidebar import Sidebar
 from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage
 from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
+from app.ui.theme import generate_stylesheet, Theme
 from app.storage.session import is_authenticated, is_admin
 
 
@@ -195,9 +196,15 @@ class MainWindow(QMainWindow):
         self._settings_page.camera_config_changed.connect(
             self._on_camera_config_changed
         )
+        self._settings_page.theme_changed.connect(self._on_theme_changed)
 
         self._switch_page("dashboard")
         self.statusBar().showMessage("Ready")
+        
+        # Apply saved theme
+        settings = load_ui_settings()
+        theme = settings.get("theme", "dark")
+        self._apply_theme(theme)
 
     def _on_camera_config_changed(self, settings: dict):
         self._apply_saved_camera_config(settings)
@@ -250,6 +257,23 @@ class MainWindow(QMainWindow):
         elif page_id == "about":
             self._about_page.refresh()
         self.statusBar().showMessage(page_id.upper())
+
+    def _apply_theme(self, theme: str):
+        """Apply the specified theme to the application."""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            theme_enum = Theme(theme.lower())
+            stylesheet = generate_stylesheet(theme_enum)
+            QApplication.instance().setStyleSheet(stylesheet)
+        except (ValueError, AttributeError):
+            # If invalid theme, default to dark
+            stylesheet = generate_stylesheet(Theme.DARK)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.instance().setStyleSheet(stylesheet)
+
+    def _on_theme_changed(self, theme: str):
+        """Handle theme change signal from settings page."""
+        self._apply_theme(theme)
 
     def closeEvent(self, event):
         for worker in self._camera_workers.values():

@@ -51,6 +51,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "default_camera": -1,
     "auto_start_cameras": False,
     "ip_camera_urls": "",
+    "theme": "dark",
 }
 
 
