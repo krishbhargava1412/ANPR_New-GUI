@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import enum
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -26,7 +27,6 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpacerItem,
@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
 
 from app.detection.plate_pipeline import DetectedBox, PlatePipeline, PlateResult
 from app.detection.legacy_backend import append_plate_log, next_snapshot_path, save_plate_snapshot
-from app.services.app_runtime import load_ui_settings, clear_plate_log
+from app.services.app_runtime import OUTPUT_VIDEO_DIR, clear_plate_log, load_ui_settings
 from app.utils.log_panel import LogPanel
 
 
@@ -48,13 +48,23 @@ class BoxState(enum.Enum):
 
 _COLOR_SCANNING = (0, 200, 255)
 _COLOR_CONFIRMED = (0, 230, 0)
+_COLOR_LOW = (0, 208, 255)
+_COLOR_ALERT = (32, 32, 255)
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _FONT_SCALE = 0.55
 _FONT_THICKNESS = 1
 
 
 class _BoxEntry:
-    __slots__ = ("bbox", "confidence", "state", "text", "confirmed_at", "updated_at")
+    __slots__ = (
+        "bbox",
+        "confidence",
+        "state",
+        "text",
+        "confirmed_at",
+        "updated_at",
+        "watchlist_hit",
+    )
 
     def __init__(self, bbox: tuple[int, int, int, int], confidence: float):
         self.bbox = bbox
@@ -63,12 +73,14 @@ class _BoxEntry:
         self.text = ""
         self.confirmed_at: float | None = None
         self.updated_at = time.monotonic()
+        self.watchlist_hit = False
 
-    def confirm(self, text: str):
+    def confirm(self, text: str, watchlist_hit: bool = False):
         self.text = text
         self.state = BoxState.CONFIRMED
         self.confirmed_at = time.monotonic()
         self.updated_at = time.monotonic()
+        self.watchlist_hit = watchlist_hit
 
     def is_expired(self, scan_ttl: float, confirm_ttl: float) -> bool:
         if self.state == BoxState.CONFIRMED and self.confirmed_at is not None:
@@ -134,10 +146,11 @@ class FeedWidget(QLabel):
                     best_iou = score
                     best_idx = idx
             if best_idx >= 0:
-                self._entries[best_idx].confirm(result.text)
+                self._entries[best_idx].confidence = result.confidence
+                self._entries[best_idx].confirm(result.text, result.watchlist_hit)
             else:
                 entry = _BoxEntry(result.bbox, result.confidence)
-                entry.confirm(result.text)
+                entry.confirm(result.text, result.watchlist_hit)
                 self._entries.append(entry)
 
     def clear_boxes(self):
@@ -168,10 +181,15 @@ class FeedWidget(QLabel):
             x1, y1, x2, y2 = entry.bbox
             if entry.state is BoxState.SCANNING:
                 color = _COLOR_SCANNING
-                label = "SCANNING..."
+                label = f"SCANNING | {entry.confidence:.2f}"
             else:
-                color = _COLOR_CONFIRMED
-                label = f"{entry.text}  {entry.confidence:.0%}"
+                if entry.watchlist_hit:
+                    color = _COLOR_ALERT
+                elif entry.confidence < 0.75:
+                    color = _COLOR_LOW
+                else:
+                    color = _COLOR_CONFIRMED
+                label = f"{entry.text} | {entry.confidence:.2f}"
 
             cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
             arm = 12
@@ -216,9 +234,16 @@ class DetectionPage(QWidget):
         self._registered_cameras: list[int] = []
         self._active_camera: int | None = None
         self._running = False
+        self._paused = False
         self._review_in_progress = False
         self._pending_results: list[PlateResult] = []
         self._frame_skip = int(load_ui_settings()["frame_skip"])
+        self._camera_last_frame_ts: dict[int, float] = {}
+        self._camera_fps: dict[int, float] = {}
+        self._camera_latency_ms: dict[int, float] = {}
+        self._recording = False
+        self._record_camera: int | None = None
+        self._record_writer: cv2.VideoWriter | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -253,6 +278,33 @@ class DetectionPage(QWidget):
         self._start_btn.clicked.connect(self._toggle_detection)
         self._start_btn.setEnabled(False)
         ctrl.addWidget(self._start_btn)
+
+        self._pause_btn = QPushButton("PAUSE")
+        self._pause_btn.setObjectName("secondaryButton")
+        self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pause_btn.clicked.connect(self._toggle_pause)
+        self._pause_btn.setEnabled(False)
+        ctrl.addWidget(self._pause_btn)
+
+        self._snapshot_btn = QPushButton("SNAPSHOT")
+        self._snapshot_btn.setObjectName("secondaryButton")
+        self._snapshot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._snapshot_btn.clicked.connect(self._capture_snapshot)
+        self._snapshot_btn.setEnabled(False)
+        ctrl.addWidget(self._snapshot_btn)
+
+        self._record_btn = QPushButton("RECORD OFF")
+        self._record_btn.setObjectName("secondaryButton")
+        self._record_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._record_btn.clicked.connect(self._toggle_recording)
+        self._record_btn.setEnabled(False)
+        ctrl.addWidget(self._record_btn)
+
+        self._camera_combo = QComboBox()
+        self._camera_combo.setObjectName("cameraCombo")
+        self._camera_combo.setMinimumWidth(160)
+        self._camera_combo.currentIndexChanged.connect(self._on_camera_selected)
+        ctrl.addWidget(self._camera_combo)
 
         ctrl.addSpacerItem(
             QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -302,8 +354,14 @@ class DetectionPage(QWidget):
         self._source_labels[index] = label or f"CAM {index}"
         self._camera_status[index] = "Idle"
         self._start_btn.setEnabled(True)
+        self._snapshot_btn.setEnabled(True)
+        self._record_btn.setEnabled(True)
+        self._camera_combo.blockSignals(True)
+        self._camera_combo.addItem(self._source_labels[index], index)
+        self._camera_combo.blockSignals(False)
         if self._active_camera is None:
             self._active_camera = index
+            self._camera_combo.setCurrentIndex(0)
             self._restore_selected_camera_state()
         if self._running:
             self._start_pipeline_for_camera(index)
@@ -317,22 +375,46 @@ class DetectionPage(QWidget):
         self._last_results.pop(index, None)
         self._camera_status.pop(index, None)
         self._source_labels.pop(index, None)
+        self._camera_last_frame_ts.pop(index, None)
+        self._camera_fps.pop(index, None)
+        self._camera_latency_ms.pop(index, None)
         if index in self._registered_cameras:
             self._registered_cameras.remove(index)
+        remove_idx = self._camera_combo.findData(index)
+        if remove_idx >= 0:
+            self._camera_combo.removeItem(remove_idx)
         if self._active_camera == index:
             self._active_camera = (
                 self._registered_cameras[0] if self._registered_cameras else None
             )
+            if self._active_camera is not None:
+                combo_idx = self._camera_combo.findData(self._active_camera)
+                if combo_idx >= 0:
+                    self._camera_combo.setCurrentIndex(combo_idx)
             self._restore_selected_camera_state()
         self._start_btn.setEnabled(len(self._registered_cameras) > 0)
+        self._pause_btn.setEnabled(self._running and len(self._registered_cameras) > 0)
+        self._snapshot_btn.setEnabled(len(self._registered_cameras) > 0)
+        self._record_btn.setEnabled(len(self._registered_cameras) > 0)
         self._update_status_text()
 
     @pyqtSlot(int, np.ndarray)
     def on_frame_ready(self, camera_index: int, frame: np.ndarray):
+        now = time.monotonic()
+        previous = self._camera_last_frame_ts.get(camera_index)
+        if previous is not None:
+            inst_fps = 1.0 / max(now - previous, 1e-3)
+            current = self._camera_fps.get(camera_index, inst_fps)
+            self._camera_fps[camera_index] = (current * 0.7) + (inst_fps * 0.3)
+        self._camera_last_frame_ts[camera_index] = now
         self._latest_frames[camera_index] = frame.copy()
         if camera_index == self._active_camera:
             self._feed.update_frame(frame)
+            if self._recording and self._record_camera == camera_index and self._record_writer:
+                self._record_writer.write(frame)
         if not self._running:
+            return
+        if self._paused:
             return
         pipeline = self._pipelines.get(camera_index)
         if pipeline is None:
@@ -362,6 +444,14 @@ class DetectionPage(QWidget):
         else:
             self._start_all_pipelines()
 
+    def _toggle_pause(self):
+        if not self._running:
+            return
+        self._paused = not self._paused
+        self._set_pipeline_pause(self._paused)
+        self._pause_btn.setText("RESUME" if self._paused else "PAUSE")
+        self._update_status_text()
+
     def start_detection(self):
         if not self._running and len(self._registered_cameras) > 0:
             self._start_all_pipelines()
@@ -374,19 +464,26 @@ class DetectionPage(QWidget):
         if len(self._registered_cameras) == 0:
             return
         self._running = True
+        self._paused = False
         for camera_index in self._registered_cameras:
             self._start_pipeline_for_camera(camera_index)
         self._start_btn.setText("STOP DETECTION")
+        self._pause_btn.setEnabled(True)
+        self._pause_btn.setText("PAUSE")
         self._update_status_text()
 
     def _stop_all_pipelines(self):
         for camera_index in list(self._pipelines):
             self._stop_pipeline_for_camera(camera_index)
         self._running = False
+        self._paused = False
         self._pending_results.clear()
         self._review_in_progress = False
         self._feed.clear_boxes()
+        self._stop_recording()
         self._start_btn.setText("START DETECTION")
+        self._pause_btn.setEnabled(False)
+        self._pause_btn.setText("PAUSE")
         self._update_status_text()
 
     def _start_pipeline_for_camera(self, camera_index: int):
@@ -395,6 +492,7 @@ class DetectionPage(QWidget):
         pipeline = PlatePipeline()
         pipeline.boxes_detected.connect(self._on_boxes_detected)
         pipeline.result_ready.connect(self._on_results)
+        pipeline.telemetry.connect(self._on_pipeline_telemetry)
         pipeline.status.connect(
             lambda message, cam=camera_index: self._on_pipeline_status(cam, message)
         )
@@ -413,7 +511,12 @@ class DetectionPage(QWidget):
         self._camera_status[camera_index] = "Stopped"
 
     def _on_camera_selected(self):
-        pass
+        camera_index = self._camera_combo.currentData()
+        if camera_index is None:
+            return
+        self._active_camera = int(camera_index)
+        self._restore_selected_camera_state()
+        self._update_status_text()
 
     def _restore_selected_camera_state(self):
         if self._active_camera is None:
@@ -452,6 +555,11 @@ class DetectionPage(QWidget):
         self._camera_status[camera_index] = message
         self._update_status_text()
 
+    @pyqtSlot(int, dict)
+    def _on_pipeline_telemetry(self, camera_index: int, payload: dict):
+        self._camera_latency_ms[camera_index] = float(payload.get("latency_ms", 0.0))
+        self._update_status_text()
+
     def _set_pipeline_pause(self, paused: bool):
         for pipeline in self._pipelines.values():
             pipeline.set_paused(paused)
@@ -477,23 +585,9 @@ class DetectionPage(QWidget):
 
         saved_snapshot = ""
         if bool(load_ui_settings().get("save_snapshots", True)):
-            decision = QMessageBox(self)
-            decision.setIcon(QMessageBox.Icon.Question)
-            decision.setWindowTitle("Save Snapshot")
-            decision.setText(f"Detected plate {result.text} from {result.source}.")
-            decision.setInformativeText(
-                "Save this snapshot now? Detection will resume after you save or skip this plate."
-            )
-            save_button = decision.addButton(
-                "Save Snapshot", QMessageBox.ButtonRole.AcceptRole
-            )
-            skip_button = decision.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
-            decision.setDefaultButton(save_button)
-            decision.exec()
-            if decision.clickedButton() == save_button:
-                snapshot_path = next_snapshot_path(result.text, result.source)
-                saved_path = save_plate_snapshot(result.plate_crop, snapshot_path)
-                saved_snapshot = str(saved_path or "")
+            snapshot_path = next_snapshot_path(result.text, result.source)
+            saved_path = save_plate_snapshot(result.plate_crop, snapshot_path)
+            saved_snapshot = str(saved_path or "")
 
         result.snapshot_path = saved_snapshot
         append_plate_log(
@@ -507,7 +601,7 @@ class DetectionPage(QWidget):
         self._camera_status[camera_index] = (
             f"Snapshot saved for {result.text}"
             if saved_snapshot
-            else f"Skipped snapshot for {result.text}"
+            else f"Logged {result.text}"
         )
         self._update_status_text()
 
@@ -516,6 +610,56 @@ class DetectionPage(QWidget):
             self._process_pending_results()
         else:
             self._set_pipeline_pause(False)
+
+    def _capture_snapshot(self):
+        if self._active_camera is None:
+            return
+        frame = self._latest_frames.get(self._active_camera)
+        if frame is None:
+            return
+        source = self._source_labels.get(self._active_camera, f"CAM {self._active_camera}")
+        snapshot_path = next_snapshot_path("manual", source)
+        saved_path = save_plate_snapshot(frame, snapshot_path)
+        if saved_path:
+            self._camera_status[self._active_camera] = f"Snapshot saved: {saved_path.name}"
+            self._update_status_text()
+
+    def _toggle_recording(self):
+        if self._recording:
+            self._stop_recording()
+            self._update_status_text()
+            return
+        if self._active_camera is None:
+            return
+        frame = self._latest_frames.get(self._active_camera)
+        if frame is None:
+            return
+        OUTPUT_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"cam_{self._active_camera}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        path = OUTPUT_VIDEO_DIR / filename
+        height, width = frame.shape[:2]
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            max(self._camera_fps.get(self._active_camera, 10.0), 10.0),
+            (width, height),
+        )
+        if not writer.isOpened():
+            return
+        self._recording = True
+        self._record_camera = self._active_camera
+        self._record_writer = writer
+        self._record_btn.setText("RECORD ON")
+        self._camera_status[self._active_camera] = f"Recording to {filename}"
+        self._update_status_text()
+
+    def _stop_recording(self):
+        if self._record_writer is not None:
+            self._record_writer.release()
+        self._record_writer = None
+        self._record_camera = None
+        self._recording = False
+        self._record_btn.setText("RECORD OFF")
 
     def _update_status_text(self):
         if len(self._registered_cameras) == 0:
@@ -528,12 +672,17 @@ class DetectionPage(QWidget):
             source_label = self._source_labels.get(
                 int(self._active_camera), f"CAM {self._active_camera}"
             )
+            fps = self._camera_fps.get(int(self._active_camera), 0.0)
+            latency = self._camera_latency_ms.get(int(self._active_camera), 0.0)
             self._status_label.setText(
-                f"Active: {len(self._registered_cameras)} camera(s) | Detection: {'Running' if self._running else 'Stopped'} | Viewing {source_label} | {status}"
+                f"Active: {len(self._registered_cameras)} camera(s) | Detection: "
+                f"{'Paused' if self._paused else 'Running' if self._running else 'Stopped'} | "
+                f"Viewing {source_label} | {fps:.1f} FPS | {latency:.0f} ms | {status}"
             )
         else:
             self._status_label.setText(
-                f"Active: {len(self._registered_cameras)} camera(s) | Detection: {'Running' if self._running else 'Stopped'}"
+                f"Active: {len(self._registered_cameras)} camera(s) | Detection: "
+                f"{'Paused' if self._paused else 'Running' if self._running else 'Stopped'}"
             )
 
     def closeEvent(self, event):

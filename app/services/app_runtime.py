@@ -4,7 +4,7 @@ import csv
 import importlib.metadata
 import importlib.util
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -207,6 +207,13 @@ def search_plate_log(
     return matches
 
 
+def recent_detections(limit: int = 12) -> list[dict[str, Any]]:
+    entries = search_plate_log()
+    if not entries:
+        return []
+    return list(reversed(entries[-max(1, limit) :]))
+
+
 def clear_plate_log() -> None:
     if PLATE_LOG_PATH.exists():
         PLATE_LOG_PATH.unlink()
@@ -229,16 +236,35 @@ def dashboard_stats() -> dict[str, str]:
     detections = search_plate_log()
     unique_plates = len({entry["plate"] for entry in detections})
     watchlist_hits = sum(1 for entry in detections if entry["watchlist_hit"])
+    confidence_values = [
+        float(entry["confidence"])
+        for entry in detections
+        if entry.get("confidence") is not None
+    ]
     snapshot_count = (
         len(list(SNAPSHOT_DIR.glob("*.png"))) if SNAPSHOT_DIR.exists() else 0
     )
     latest = detections[-1]["timestamp"] if detections else "No detections yet"
+    recent_cutoff = datetime.now() - timedelta(minutes=5)
+    recent_hits = [
+        entry
+        for entry in detections
+        if entry["timestamp_dt"] is not None and entry["timestamp_dt"] >= recent_cutoff
+    ]
+    configured_cameras = len(get_saved_camera_sources())
     return {
         "detections": str(len(detections)),
         "plates": str(unique_plates),
         "snapshots": str(snapshot_count),
         "watchlist_hits": str(watchlist_hits),
         "latest": latest,
+        "active_cameras": str(configured_cameras),
+        "rate_per_min": f"{len(recent_hits) / 5.0:.1f}",
+        "avg_confidence": (
+            f"{(sum(confidence_values) / len(confidence_values)) * 100:.0f}%"
+            if confidence_values
+            else "--"
+        ),
     }
 
 

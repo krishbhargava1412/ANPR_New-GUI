@@ -44,6 +44,7 @@ class PlatePipeline(QThread):
     boxes_detected = pyqtSignal(int, list)
     result_ready = pyqtSignal(list)
     status = pyqtSignal(str)
+    telemetry = pyqtSignal(int, dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,10 +124,20 @@ class PlatePipeline(QThread):
                 self.status.emit(f"Pipeline error: {exc}")
 
     def _process_frame(self, frame: np.ndarray, camera_index: int, source_label: str):
+        started = time.perf_counter()
         detections = detect_plates_in_frame(
             self._model,
             frame,
             confidence_threshold=self._confidence_threshold,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self.telemetry.emit(
+            camera_index,
+            {
+                "latency_ms": elapsed_ms,
+                "box_count": len(detections),
+                "source": source_label or f"Camera {camera_index}",
+            },
         )
         if not detections:
             return
@@ -170,4 +181,13 @@ class PlatePipeline(QThread):
             )
 
         if results:
+            self.telemetry.emit(
+                camera_index,
+                {
+                    "latency_ms": elapsed_ms,
+                    "box_count": len(detections),
+                    "result_count": len(results),
+                    "source": source,
+                },
+            )
             self.result_ready.emit(results)

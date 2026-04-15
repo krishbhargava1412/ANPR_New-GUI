@@ -17,40 +17,40 @@ def get_theme_colors(theme: Theme | str) -> dict[str, str]:
     if theme == Theme.DARK:
         return {
             # Base colors
-            "bg_primary": "#0d0d0d",
-            "bg_secondary": "#111111",
-            "bg_tertiary": "#141414",
-            "bg_hover": "#1a1a1a",
+            "bg_primary": "#0f172a",
+            "bg_secondary": "#111c34",
+            "bg_tertiary": "#1e293b",
+            "bg_hover": "#263244",
             
             # Text colors
-            "text_primary": "#ffffff",
-            "text_secondary": "#888888",
-            "text_tertiary": "#666666",
-            "text_muted": "#444444",
+            "text_primary": "#f8fafc",
+            "text_secondary": "#cbd5e1",
+            "text_tertiary": "#94a3b8",
+            "text_muted": "#64748b",
             
             # Border colors
-            "border_primary": "#1e1e1e",
-            "border_secondary": "#2a2a2a",
-            "border_tertiary": "#1a1a1a",
+            "border_primary": "#243145",
+            "border_secondary": "#334155",
+            "border_tertiary": "#182235",
             
             # Accent colors
-            "accent": "#e8ff00",
-            "accent_hover": "#f0ff33",
-            "accent_pressed": "#c8dd00",
-            "success": "#00e676",
-            "warning": "#e8a800",
-            "error": "#ff4444",
-            "error_hover": "#5a0000",
+            "accent": "#3b82f6",
+            "accent_hover": "#60a5fa",
+            "accent_pressed": "#2563eb",
+            "success": "#22c55e",
+            "warning": "#f59e0b",
+            "error": "#ef4444",
+            "error_hover": "#3b1215",
             
             # Status indicators
-            "status_active": "#00e676",
-            "status_inactive": "#2a2a2a",
-            "status_error": "#ff4444",
+            "status_active": "#22c55e",
+            "status_inactive": "#64748b",
+            "status_error": "#ef4444",
             
             # Special
-            "input_bg": "#0d0d0d",
-            "card_bg": "#111111",
-            "log_bg": "#0a0a0a",
+            "input_bg": "#0b1324",
+            "card_bg": "#111c34",
+            "log_bg": "#09111f",
         }
     else:  # LIGHT theme
         return {
@@ -187,6 +187,49 @@ QLabel#pageSubtitle {{
     color: {colors['text_tertiary']};
     font-size: 12px;
     letter-spacing: 0.3px;
+}}
+
+QFrame#tickerBar {{
+    background-color: {colors['bg_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 8px;
+}}
+
+QLabel#tickerLabel {{
+    color: {colors['text_secondary']};
+    font-size: 12px;
+    font-weight: 600;
+}}
+
+QFrame#monitorPanel {{
+    background-color: {colors['bg_secondary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 8px;
+}}
+
+QLabel#panelTitle {{
+    color: {colors['text_primary']};
+    font-size: 14px;
+    font-weight: 700;
+}}
+
+QFrame#monitorMetricCard {{
+    background-color: {colors['bg_secondary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 8px;
+}}
+
+QLabel#metricValue {{
+    color: {colors['text_primary']};
+    font-size: 18px;
+    font-weight: 700;
+}}
+
+QLabel#metricLabel {{
+    color: {colors['text_tertiary']};
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.4px;
 }}
 
 /* Drop zone */
@@ -338,6 +381,14 @@ QWidget#logEntry:hover {{
     background-color: {colors['bg_tertiary']};
 }}
 
+QWidget#logEntry[severity="alert"] {{
+    background-color: rgba(239, 68, 68, 0.12);
+}}
+
+QWidget#logEntry[severity="warning"] {{
+    background-color: rgba(245, 158, 11, 0.10);
+}}
+
 QLabel#logTime {{
     color: {colors['text_tertiary']};
     font-size: 11px;
@@ -431,13 +482,46 @@ QLabel#cameraTileTitle {{
     letter-spacing: 1.5px;
 }}
 
+QLabel#cameraState {{
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+}}
+
+QLabel#cameraState[status="live"] {{
+    background-color: rgba(34, 197, 94, 0.16);
+    color: {colors['success']};
+}}
+
+QLabel#cameraState[status="lost"] {{
+    background-color: rgba(239, 68, 68, 0.16);
+    color: {colors['error']};
+}}
+
+QLabel#cameraState[status="idle"] {{
+    background-color: rgba(148, 163, 184, 0.16);
+    color: {colors['text_tertiary']};
+}}
+
 QLabel#cameraFrameLabel {{
     background-color: {colors['log_bg']};
     color: {colors['text_tertiary']};
     font-size: 11px;
     letter-spacing: 1px;
+}}
+
+QWidget#cameraTileFooter {{
+    background-color: {colors['bg_secondary']};
+    border-top: 1px solid {colors['border_tertiary']};
     border-bottom-left-radius: 8px;
     border-bottom-right-radius: 8px;
+}}
+
+QLabel#cameraMeta {{
+    color: {colors['text_secondary']};
+    font-size: 10px;
+    font-weight: 600;
 }}
 
 QPushButton#tileSelectButton {{
@@ -667,6 +751,63 @@ QHeaderView::section {{
     padding: 8px;
     font-size: 11px;
     font-weight: 600;
+}}
+
+QTableWidget {{
+    background-color: {colors['bg_secondary']};
+    color: {colors['text_secondary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 8px;
+    gridline-color: {colors['border_tertiary']};
+    selection-background-color: {colors['bg_hover']};
+    selection-color: {colors['text_primary']};
+}}
+
+QTableWidget::item {{
+    padding: 6px;
+    border-bottom: 1px solid {colors['border_tertiary']};
+}}
+
+QTabWidget::pane {{
+    border: 1px solid {colors['border_primary']};
+    background-color: {colors['bg_secondary']};
+    border-radius: 8px;
+    top: -1px;
+}}
+
+QTabBar::tab {{
+    background-color: {colors['bg_tertiary']};
+    color: {colors['text_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    padding: 10px 14px;
+    margin-right: 6px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+}}
+
+QTabBar::tab:selected {{
+    color: {colors['text_primary']};
+    background-color: {colors['bg_secondary']};
+    border-bottom-color: {colors['bg_secondary']};
+}}
+
+QSlider::groove:horizontal {{
+    background: {colors['border_tertiary']};
+    height: 6px;
+    border-radius: 3px;
+}}
+
+QSlider::sub-page:horizontal {{
+    background: {colors['accent']};
+    border-radius: 3px;
+}}
+
+QSlider::handle:horizontal {{
+    background: {colors['text_primary']};
+    border: 2px solid {colors['accent']};
+    width: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
 }}
 
 /* Checkbox */

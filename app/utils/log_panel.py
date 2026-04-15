@@ -23,6 +23,12 @@ class LogEntry(QWidget):
     def __init__(self, result: PlateResult, parent=None):
         super().__init__(parent)
         self.setObjectName("logEntry")
+        if result.watchlist_hit:
+            self.setProperty("severity", "alert")
+        elif result.confidence < 0.75:
+            self.setProperty("severity", "warning")
+        else:
+            self.setProperty("severity", "normal")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)

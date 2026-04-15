@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -25,6 +26,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QComboBox,
+    QSlider,
+    QTabWidget,
 )
 
 from app.services.app_runtime import (
@@ -37,6 +40,7 @@ from app.services.app_runtime import (
     dashboard_stats,
     dependency_status,
     load_ui_settings,
+    recent_detections,
     save_ui_settings,
     search_plate_log,
     clear_plate_log,
@@ -78,31 +82,44 @@ class DashboardPage(QWidget):
         super().__init__(parent)
         self.setObjectName("contentArea")
         self._value_labels: dict[str, QLabel] = {}
+        self._recent_table = None
+        self._preview = None
+        self._preview_details = None
         self._build_ui()
         self.refresh()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 36, 36, 36)
-        layout.setSpacing(24)
-        layout.addLayout(_page_header("Dashboard", "Integrated ANPR runtime overview"))
+        layout.setContentsMargins(28, 28, 28, 24)
+        layout.setSpacing(16)
+        layout.addLayout(_page_header("Dashboard", "Live monitoring, camera readiness, and recent evidence"))
 
-        row = QHBoxLayout()
-        row.setSpacing(12)
+        ticker = QFrame()
+        ticker.setObjectName("tickerBar")
+        ticker_row = QHBoxLayout(ticker)
+        ticker_row.setContentsMargins(16, 10, 16, 10)
+        self._latest_label = QLabel("")
+        self._latest_label.setObjectName("tickerLabel")
+        ticker_row.addWidget(self._latest_label)
+        ticker_row.addStretch()
+        layout.addWidget(ticker)
+
+        row = QGridLayout()
+        row.setHorizontalSpacing(12)
+        row.setVerticalSpacing(12)
         for key, label in (
             ("detections", "DETECTIONS LOGGED"),
             ("plates", "UNIQUE PLATES"),
-            ("snapshots", "SNAPSHOTS SAVED"),
+            ("rate_per_min", "PLATES / MIN"),
+            ("active_cameras", "ACTIVE CAMERAS"),
+            ("avg_confidence", "AVG CONFIDENCE"),
             ("watchlist_hits", "WATCHLIST HITS"),
         ):
             card, value_label = _stat_card_widget(label)
             self._value_labels[key] = value_label
-            row.addWidget(card)
+            index = len(self._value_labels) - 1
+            row.addWidget(card, index // 3, index % 3)
         layout.addLayout(row)
-
-        self._latest_label = QLabel("")
-        self._latest_label.setObjectName("pageSubtitle")
-        layout.addWidget(self._latest_label)
 
         actions = QHBoxLayout()
         for text, handler in (
@@ -117,37 +134,130 @@ class DashboardPage(QWidget):
         actions.addStretch()
         layout.addLayout(actions)
 
-        layout.addStretch()
+        lower = QHBoxLayout()
+        lower.setSpacing(14)
+
+        self._recent_table = QTableWidget(0, 5)
+        self._recent_table.setHorizontalHeaderLabels(
+            ["TIME", "PLATE", "SOURCE", "CONF", "STATUS"]
+        )
+        self._recent_table.horizontalHeader().setStretchLastSection(True)
+        self._recent_table.verticalHeader().setVisible(False)
+        self._recent_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._recent_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._recent_table.itemSelectionChanged.connect(self._update_preview)
+        lower.addWidget(self._recent_table, stretch=3)
+
+        side = QVBoxLayout()
+        side.setSpacing(10)
+        side_card = QFrame()
+        side_card.setObjectName("monitorPanel")
+        side_card_layout = QVBoxLayout(side_card)
+        side_card_layout.setContentsMargins(14, 14, 14, 14)
+        side_card_layout.setSpacing(10)
+        title = QLabel("Latest Evidence")
+        title.setObjectName("panelTitle")
+        side_card_layout.addWidget(title)
+        self._preview = QLabel("No recent snapshot")
+        self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview.setMinimumSize(280, 200)
+        self._preview.setObjectName("dropZone")
+        side_card_layout.addWidget(self._preview)
+        self._preview_details = QLabel("Recent detections will appear here.")
+        self._preview_details.setObjectName("pageSubtitle")
+        self._preview_details.setWordWrap(True)
+        side_card_layout.addWidget(self._preview_details)
+        side.addWidget(side_card)
+        lower.addLayout(side, stretch=2)
+        layout.addLayout(lower, stretch=1)
 
     def refresh(self):
         stats = dashboard_stats()
         for key, label in self._value_labels.items():
             label.setText(stats.get(key, "0"))
-        self._latest_label.setText(f"Latest detection: {stats['latest']}")
+        self._latest_label.setText(
+            f"LIVE ACTIVITY  |  Last detection: {stats['latest']}  |  "
+            f"{stats.get('active_cameras', '0')} configured cameras  |  "
+            f"{stats.get('rate_per_min', '0.0')} plates/min"
+        )
+
+        matches = recent_detections(12)
+        self._recent_table.setRowCount(len(matches))
+        for row_index, match in enumerate(matches):
+            status = "WATCHLIST" if match["watchlist_hit"] else "CLEAR"
+            values = [
+                match["timestamp"].split(" ")[-1],
+                match["plate"],
+                match["source"],
+                "" if match["confidence"] is None else f"{match['confidence']:.2f}",
+                status,
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, match)
+                self._recent_table.setItem(row_index, column, item)
+        if matches:
+            self._recent_table.selectRow(0)
+        else:
+            self._preview.setPixmap(QPixmap())
+            self._preview.setText("No recent snapshot")
+            self._preview_details.setText("Recent detections will appear here.")
 
     def _clear_log(self):
         clear_plate_log()
         self.refresh()
 
     def _clear_outputs(self):
-        count = clear_outputs()
+        clear_outputs()
         self.refresh()
+
+    def _selected_dashboard_match(self) -> dict[str, object] | None:
+        items = self._recent_table.selectedItems()
+        if not items:
+            return None
+        return items[0].data(Qt.ItemDataRole.UserRole)
+
+    def _update_preview(self):
+        match = self._selected_dashboard_match()
+        if not match:
+            return
+        snapshot_path = Path(str(match.get("snapshot_path") or ""))
+        self._preview_details.setText(
+            f"Plate: {match['plate']}\n"
+            f"Source: {match['source']}\n"
+            f"Time: {match['timestamp']}\n"
+            f"Confidence: {match['confidence'] if match['confidence'] is not None else '--'}"
+        )
+        if snapshot_path.exists():
+            pixmap = QPixmap(str(snapshot_path))
+            self._preview.setPixmap(
+                pixmap.scaled(
+                    self._preview.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self._preview.setText("")
+        else:
+            self._preview.setPixmap(QPixmap())
+            self._preview.setText("Snapshot unavailable")
 
 
 class HistoryPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("contentArea")
+        self._all_matches: list[dict[str, object]] = []
         self._build_ui()
         self.refresh()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 36, 36, 24)
+        layout.setContentsMargins(28, 28, 28, 24)
         layout.setSpacing(16)
         layout.addLayout(
             _page_header(
-                "History", "Search detections, watchlist hits, and evidence snapshots"
+                "History", "Investigation view for detections, repeat sightings, and evidence"
             )
         )
 
@@ -155,17 +265,26 @@ class HistoryPage(QWidget):
         self._plate_edit = QLineEdit()
         self._plate_edit.setPlaceholderText("Plate text")
         self._source_edit = QLineEdit()
-        self._source_edit.setPlaceholderText("Source")
-        self._from_edit = QLineEdit()
-        self._from_edit.setPlaceholderText("From YYYY-MM-DD")
-        self._to_edit = QLineEdit()
-        self._to_edit.setPlaceholderText("To YYYY-MM-DD")
+        self._source_edit.setPlaceholderText("Camera / source")
+        self._time_preset = QComboBox()
+        self._time_preset.addItems(["All Time", "Last 1 Hour", "Last 24 Hours", "Last 7 Days"])
+        self._conf_min = QDoubleSpinBox()
+        self._conf_min.setRange(0.0, 1.0)
+        self._conf_min.setSingleStep(0.05)
+        self._conf_min.setPrefix("Min ")
+        self._conf_min.setValue(0.0)
+        self._conf_max = QDoubleSpinBox()
+        self._conf_max.setRange(0.0, 1.0)
+        self._conf_max.setSingleStep(0.05)
+        self._conf_max.setPrefix("Max ")
+        self._conf_max.setValue(1.0)
         self._watchlist_only = QCheckBox("Watchlist only")
         for widget in (
             self._plate_edit,
             self._source_edit,
-            self._from_edit,
-            self._to_edit,
+            self._time_preset,
+            self._conf_min,
+            self._conf_max,
             self._watchlist_only,
         ):
             filters.addWidget(widget)
@@ -175,7 +294,23 @@ class HistoryPage(QWidget):
         filters.addWidget(search_btn)
         layout.addLayout(filters)
 
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(12)
+        self._seen_count = _stat_card_widget("SIGHTINGS")
+        self._first_seen = _stat_card_widget("FIRST SEEN")
+        self._last_seen = _stat_card_widget("LAST SEEN")
+        self._avg_conf = _stat_card_widget("AVG CONFIDENCE")
+        for card, _ in (
+            self._seen_count,
+            self._first_seen,
+            self._last_seen,
+            self._avg_conf,
+        ):
+            summary_row.addWidget(card)
+        layout.addLayout(summary_row)
+
         splitter_row = QHBoxLayout()
+        splitter_row.setSpacing(14)
 
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(
@@ -191,7 +326,7 @@ class HistoryPage(QWidget):
         side = QVBoxLayout()
         self._preview = QLabel("No snapshot selected")
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._preview.setMinimumSize(240, 180)
+        self._preview.setMinimumSize(280, 220)
         self._preview.setObjectName("dropZone")
         side.addWidget(self._preview)
 
@@ -200,7 +335,10 @@ class HistoryPage(QWidget):
         self._details.setObjectName("pageSubtitle")
         side.addWidget(self._details)
 
-        for text, handler in (("OPEN SNAPSHOT", self._open_selected_snapshot),):
+        for text, handler in (
+            ("OPEN SNAPSHOT", self._open_selected_snapshot),
+            ("PLAY SEQUENCE", self._show_sequence_summary),
+        ):
             btn = QPushButton(text)
             btn.setObjectName("secondaryButton")
             btn.clicked.connect(handler)
@@ -211,13 +349,20 @@ class HistoryPage(QWidget):
         layout.addLayout(splitter_row)
 
     def refresh(self):
+        from_date, to_date = self._resolve_time_window()
         matches = search_plate_log(
             self._plate_edit.text(),
             source_filter=self._source_edit.text(),
             watchlist_only=self._watchlist_only.isChecked(),
-            from_date=self._from_edit.text().strip(),
-            to_date=self._to_edit.text().strip(),
+            from_date=from_date,
+            to_date=to_date,
         )
+        matches = [
+            match
+            for match in matches
+            if self._confidence_match(match.get("confidence"))
+        ]
+        self._all_matches = matches
         self._table.setRowCount(len(matches))
         for row_index, match in enumerate(matches):
             values = [
@@ -231,12 +376,17 @@ class HistoryPage(QWidget):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, match)
                 self._table.setItem(row_index, column, item)
+                if match["watchlist_hit"]:
+                    item.setBackground(Qt.GlobalColor.darkRed)
+                elif match["confidence"] is not None and float(match["confidence"]) < 0.75:
+                    item.setBackground(Qt.GlobalColor.darkYellow)
         if matches:
             self._table.selectRow(0)
         else:
             self._preview.setText("No snapshot selected")
             self._preview.setPixmap(QPixmap())
             self._details.setText("No matching detections.")
+            self._update_summary(None)
 
     def _selected_match(self) -> dict[str, object] | None:
         items = self._table.selectedItems()
@@ -248,13 +398,19 @@ class HistoryPage(QWidget):
         match = self._selected_match()
         if not match:
             return
+        related = [entry for entry in self._all_matches if entry["plate"] == match["plate"]]
+        confidences = [entry["confidence"] for entry in related if entry["confidence"] is not None]
+        avg_conf = f"{(sum(confidences) / len(confidences)):.2f}" if confidences else "--"
         snapshot_path = Path(str(match.get("snapshot_path") or ""))
         self._details.setText(
             f"Plate: {match['plate']}\n"
             f"Source: {match['source']}\n"
             f"Time: {match['timestamp']}\n"
-            f"Snapshot: {snapshot_path if snapshot_path else 'None'}"
+            f"Snapshot: {snapshot_path if snapshot_path else 'None'}\n"
+            f"Sightings: {len(related)}\n"
+            f"Average confidence: {avg_conf}"
         )
+        self._update_summary(match["plate"])
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
             self._preview.setPixmap(
@@ -280,6 +436,56 @@ class HistoryPage(QWidget):
             QMessageBox.information(
                 self, "Snapshot", f"Snapshot saved at:\n{snapshot_path}"
             )
+
+    def _resolve_time_window(self) -> tuple[str, str]:
+        preset = self._time_preset.currentText()
+        now = datetime.now()
+        if preset == "Last 1 Hour":
+            start = now - timedelta(hours=1)
+        elif preset == "Last 24 Hours":
+            start = now - timedelta(days=1)
+        elif preset == "Last 7 Days":
+            start = now - timedelta(days=7)
+        else:
+            return "", ""
+        return start.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+    def _confidence_match(self, confidence: object) -> bool:
+        if confidence is None:
+            return True
+        value = float(confidence)
+        return self._conf_min.value() <= value <= self._conf_max.value()
+
+    def _update_summary(self, plate: str | None):
+        if not plate:
+            for _, label in (self._seen_count, self._first_seen, self._last_seen, self._avg_conf):
+                label.setText("--")
+            return
+        related = [entry for entry in self._all_matches if entry["plate"] == plate]
+        confidences = [float(entry["confidence"]) for entry in related if entry["confidence"] is not None]
+        first_seen = related[0]["timestamp"] if related else "--"
+        last_seen = related[-1]["timestamp"] if related else "--"
+        self._seen_count[1].setText(str(len(related)))
+        self._first_seen[1].setText(first_seen.split(" ")[-1] if first_seen != "--" else "--")
+        self._last_seen[1].setText(last_seen.split(" ")[-1] if last_seen != "--" else "--")
+        self._avg_conf[1].setText(f"{(sum(confidences) / len(confidences)) * 100:.0f}%" if confidences else "--")
+
+    def _show_sequence_summary(self):
+        match = self._selected_match()
+        if not match:
+            return
+        related = [entry for entry in self._all_matches if entry["plate"] == match["plate"]]
+        if not related:
+            return
+        QMessageBox.information(
+            self,
+            "Sequence",
+            "\n".join(
+                f"{entry['timestamp']} | {entry['source']} | "
+                f"{entry['confidence'] if entry['confidence'] is not None else '--'}"
+                for entry in related[:20]
+            ),
+        )
 
 
 class SettingsPage(QWidget):
@@ -307,7 +513,7 @@ class SettingsPage(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(36, 36, 36, 24)
+        main_layout.setContentsMargins(28, 28, 28, 24)
         main_layout.setSpacing(0)
 
         header = QVBoxLayout()
@@ -319,106 +525,91 @@ class SettingsPage(QWidget):
         header.addWidget(title)
         header.addWidget(subtitle)
         main_layout.addLayout(header)
-        main_layout.addSpacing(24)
+        main_layout.addSpacing(18)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        tabs = QTabWidget()
+        tabs.setObjectName("settingsTabs")
 
-        scroll_content = QWidget()
-        scroll_content.setStyleSheet("background-color: transparent;")
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setSpacing(16)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Theme card
-        theme_card = self._create_card(
-            "Appearance",
-            [
-                ("Theme", self._create_theme_selector()),
-            ],
+        general_tab = self._tab_page()
+        general_tab.layout().addWidget(
+            self._create_card("Appearance", [("Theme", self._create_theme_selector())])
         )
-        scroll_layout.addWidget(theme_card)
+        general_tab.layout().addWidget(
+            self._create_card(
+                "General",
+                [("Auto-start", self._create_checkbox(
+                    "Auto-load saved cameras and start detection on launch",
+                    "auto_start_cameras",
+                ))],
+            )
+        )
+        general_tab.layout().addStretch()
+        tabs.addTab(general_tab, "General")
 
-        camera_card = self._create_card(
-            "Camera Configuration",
-            [
-                ("Scan Cameras", self._create_scan_section()),
-                (
-                    "Camera Indices",
-                    self._create_line_edit("e.g., 0,1,2", "camera_indices"),
-                ),
-                (
-                    "IP / RTSP URLs",
-                    self._create_text_edit(
+        cameras_tab = self._tab_page()
+        cameras_tab.layout().addWidget(
+            self._create_card(
+                "Camera Configuration",
+                [
+                    ("Scan Cameras", self._create_scan_section()),
+                    ("Camera Indices", self._create_line_edit("e.g., 0,1,2", "camera_indices")),
+                    ("IP / RTSP URLs", self._create_text_edit(
                         "One source per line, e.g.\nrtsp://user:pass@192.168.1.10/stream",
                         "ip_camera_urls",
-                    ),
-                ),
-                (
-                    "Default Camera",
-                    self._create_spin_box(-1, 10, "default_camera", "None"),
-                ),
-                (
-                    "Auto-start",
-                    self._create_checkbox(
-                        "Auto-load saved cameras and start detection on launch",
-                        "auto_start_cameras",
-                    ),
-                ),
-            ],
+                    )),
+                    ("Default Camera", self._create_spin_box(-1, 10, "default_camera", "None")),
+                ],
+            )
         )
-        scroll_layout.addWidget(camera_card)
+        cameras_tab.layout().addStretch()
+        tabs.addTab(cameras_tab, "Cameras")
 
-        detection_card = self._create_card(
-            "Detection Settings",
-            [
-                (
-                    "Confidence Threshold",
-                    self._create_double_spin(0.05, 1.0, 0.05, "confidence"),
-                ),
-                (
-                    "Frame Skip",
-                    self._create_spin_box(1, 10, "frame_skip"),
-                ),
-            ],
+        detection_tab = self._tab_page()
+        detection_tab.layout().addWidget(
+            self._create_card(
+                "Detection",
+                [
+                    ("Confidence Threshold", self._create_confidence_slider()),
+                    ("Frame Skip", self._create_spin_box(1, 10, "frame_skip")),
+                ],
+            )
         )
-        scroll_layout.addWidget(detection_card)
+        detection_tab.layout().addStretch()
+        tabs.addTab(detection_tab, "Detection")
 
-        storage_card = self._create_card(
-            "Storage & Alerts",
-            [
-                (
-                    "Save Snapshots",
-                    self._create_checkbox(
-                        "Ask before saving each confirmed plate snapshot",
-                        "save_snapshots"
-                    ),
-                ),
-                (
-                    "Watchlist Alerts",
-                    self._create_checkbox(
-                        "Enable alerts for watchlist hits", "watchlist_alerts"
-                    ),
-                ),
-            ],
+        storage_tab = self._tab_page()
+        storage_tab.layout().addWidget(
+            self._create_card(
+                "Storage",
+                [
+                    ("Save Snapshots", self._create_checkbox(
+                        "Save confirmed snapshots automatically",
+                        "save_snapshots",
+                    )),
+                    ("Settings", self._create_editable_path_display("Settings", SETTINGS_PATH)),
+                    ("Watchlist", self._create_editable_path_display("Watchlist", WATCHLIST_PATH)),
+                    ("Plate Log", self._create_editable_path_display("Plate Log", PLATE_LOG_PATH)),
+                    ("Snapshots", self._create_editable_path_display("Snapshots", SNAPSHOT_DIR)),
+                ],
+            )
         )
-        scroll_layout.addWidget(storage_card)
+        storage_tab.layout().addStretch()
+        tabs.addTab(storage_tab, "Storage")
 
-        paths_card = self._create_card(
-            "Paths & Storage Locations",
-            [
-                ("Settings", self._create_editable_path_display("Settings", SETTINGS_PATH)),
-                ("Watchlist", self._create_editable_path_display("Watchlist", WATCHLIST_PATH)),
-                ("Plate Log", self._create_editable_path_display("Plate Log", PLATE_LOG_PATH)),
-                ("Snapshots", self._create_editable_path_display("Snapshots", SNAPSHOT_DIR)),
-            ],
+        alerts_tab = self._tab_page()
+        alerts_tab.layout().addWidget(
+            self._create_card(
+                "Alerts",
+                [("Watchlist Alerts", self._create_checkbox(
+                    "Enable alerts for watchlist hits",
+                    "watchlist_alerts",
+                ))],
+            )
         )
-        scroll_layout.addWidget(paths_card)
+        alerts_tab.layout().addStretch()
+        tabs.addTab(alerts_tab, "Alerts")
 
-        scroll_layout.addStretch()
-        scroll.setWidget(scroll_content)
-        main_layout.addWidget(scroll)
+        main_layout.addWidget(tabs)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -491,8 +682,36 @@ class SettingsPage(QWidget):
         edit = QTextEdit()
         edit.setPlaceholderText(placeholder)
         edit.setFixedHeight(88)
+        if attr_name == "ip_camera_urls":
+            edit.textChanged.connect(self._validate_camera_sources)
         setattr(self, f"_{attr_name}", edit)
         return edit
+
+    def _create_confidence_slider(self) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(5, 100)
+        slider.setSingleStep(5)
+        value = QLabel("0.50")
+        value.setObjectName("pageSubtitle")
+        slider.valueChanged.connect(lambda current: value.setText(f"{current / 100:.2f}"))
+        layout.addWidget(slider, 1)
+        layout.addWidget(value)
+
+        self._confidence = slider
+        self._confidence_label = value
+        return widget
+
+    def _tab_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(16)
+        return page
 
     def _create_theme_selector(self) -> QWidget:
         """Create a theme selector combo box."""
@@ -564,6 +783,26 @@ class SettingsPage(QWidget):
         if selected_path:
             edit.setText(selected_path)
 
+    def _validate_camera_sources(self):
+        raw = self._ip_camera_urls.toPlainText().strip()
+        if not raw:
+            self._camera_status_label.setText(
+                "Saved sources load automatically. Scan only to discover local cameras."
+            )
+            return
+        invalid = [
+            line.strip()
+            for line in raw.splitlines()
+            if line.strip()
+            and not line.strip().lower().startswith(("rtsp://", "http://", "https://"))
+        ]
+        if invalid:
+            self._camera_status_label.setText(
+                f"Invalid stream URL: {invalid[0]}"
+            )
+        else:
+            self._camera_status_label.setText("Camera sources look valid.")
+
     def _load(self):
         settings = load_ui_settings()
         
@@ -575,7 +814,7 @@ class SettingsPage(QWidget):
             self._theme_combo.setCurrentIndex(0)
         
         # Load other settings
-        self._confidence.setValue(float(settings.get("confidence_threshold", 0.5)))
+        self._confidence.setValue(int(float(settings.get("confidence_threshold", 0.5)) * 100))
         self._frame_skip.setValue(int(settings.get("frame_skip", 5)))
         self._save_snapshots.setChecked(bool(settings.get("save_snapshots", True)))
         self._watchlist_alerts.setChecked(
@@ -595,7 +834,7 @@ class SettingsPage(QWidget):
         
         settings = save_ui_settings(
             {
-                "confidence_threshold": float(self._confidence.value()),
+                "confidence_threshold": float(self._confidence.value() / 100.0),
                 "frame_skip": int(self._frame_skip.value()),
                 "save_snapshots": bool(self._save_snapshots.isChecked()),
                 "watchlist_alerts_enabled": bool(self._watchlist_alerts.isChecked()),

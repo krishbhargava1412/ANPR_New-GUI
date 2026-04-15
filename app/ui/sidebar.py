@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QFrame, QSpacerItem, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QFrame, QSpacerItem, QSizePolicy, QStyle
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
@@ -10,6 +10,13 @@ class Sidebar(QWidget):
         ("DETECTION", "detection"),
         ("HISTORY", "history"),
     ]
+    ICON_MAP = {
+        "dashboard": QStyle.StandardPixmap.SP_DesktopIcon,
+        "detection": QStyle.StandardPixmap.SP_MediaPlay,
+        "history": QStyle.StandardPixmap.SP_FileDialogDetailedView,
+        "settings": QStyle.StandardPixmap.SP_FileDialogContentsView,
+        "about": QStyle.StandardPixmap.SP_MessageBoxInformation,
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,6 +50,7 @@ class Sidebar(QWidget):
             btn = QPushButton(label)
             btn.setObjectName("navButton")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setIcon(self.style().standardIcon(self.ICON_MAP[page_id]))
             btn.clicked.connect(lambda checked, p=page_id: self._on_nav_click(p))
             self._buttons[page_id] = btn
             layout.addWidget(btn)
@@ -66,6 +74,7 @@ class Sidebar(QWidget):
             btn = QPushButton(label)
             btn.setObjectName("navButton")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setIcon(self.style().standardIcon(self.ICON_MAP[page_id]))
             btn.clicked.connect(lambda checked, p=page_id: self._on_nav_click(p))
             self._buttons[page_id] = btn
             layout.addWidget(btn)
