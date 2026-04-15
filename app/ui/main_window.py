@@ -2,15 +2,25 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow, QStackedWidget, QVBoxLayout, 
-    QWidget, QPushButton, QMenu, QMessageBox, QLineEdit
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+    QPushButton,
+    QMenu,
+    QMessageBox,
+    QLineEdit,
 )
 
-from app.camera.camera_page import CameraPage
+from app.camera.camera_worker import CameraWorker
 from app.detection.detection_page import DetectionPage
+from app.services.app_runtime import get_saved_camera_sources, load_ui_settings
 from app.ui.sidebar import Sidebar
 from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage
 from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
+from app.ui.theme import generate_stylesheet, Theme
 from app.storage.session import is_authenticated, is_admin
 
 
@@ -25,7 +35,9 @@ class PlaceholderPage(QWidget):
         title_label.setObjectName("pageTitle")
         subtitle_label = QLabel(subtitle)
         subtitle_label.setObjectName("pageSubtitle")
-        subtitle_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        subtitle_label.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
         subtitle_label.setWordWrap(True)
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
@@ -41,24 +53,26 @@ class MainWindow(QMainWindow):
         self._create_menu_bar()
         self._build_ui()
         self._initialize_runtime()
+        self._camera_workers: dict[int, CameraWorker] = {}
+        self._apply_saved_camera_config(load_ui_settings())
         self._check_authentication()
 
     def _initialize_runtime(self):
         from app.detection.legacy_backend import get_plate_model, _get_safe_device
         from app.services.app_runtime import dependency_status
-        
+
         device = _get_safe_device()
         print(f"[INFO] Using processing device: {device}")
-        
+
         status = dependency_status()
         print(f"[INFO] Device detected: {status['device']}")
-        
+
         try:
             get_plate_model()
             print(f"[INFO] Model loaded successfully on {device}")
         except Exception as e:
             print(f"[WARN] Model loading failed: {e}")
-        
+
         self.statusBar().showMessage(f"Device: {device} | Ready")
 
     def _check_authentication(self):
@@ -70,7 +84,11 @@ class MainWindow(QMainWindow):
             self._update_user_menu()
             self.statusBar().showMessage("Login successful")
         else:
-            QMessageBox.warning(self, "Authentication Required", "You must login to use the application.")
+            QMessageBox.warning(
+                self,
+                "Authentication Required",
+                "You must login to use the application.",
+            )
 
     def _create_menu_bar(self):
         menubar = self.menuBar()
@@ -85,7 +103,9 @@ class MainWindow(QMainWindow):
 
         user = get_current_user()
         if user:
-            action = self._user_menu.addAction(f"Logged in: {user['username']} ({user['role']})")
+            action = self._user_menu.addAction(
+                f"Logged in: {user['username']} ({user['role']})"
+            )
             action.setEnabled(False)
 
             self._user_menu.addSeparator()
@@ -108,6 +128,7 @@ class MainWindow(QMainWindow):
 
     def _on_change_password(self):
         from app.ui.login import show_change_password_dialog
+
         show_change_password_dialog(self)
 
     def _on_login(self):
@@ -125,9 +146,12 @@ class MainWindow(QMainWindow):
 
     def _show_user_management(self):
         if not is_admin():
-            QMessageBox.warning(self, "Access Denied", "Only administrators can manage users.")
+            QMessageBox.warning(
+                self, "Access Denied", "Only administrators can manage users."
+            )
             return
         from app.ui.workspace_pages import UserManagementPage
+
         self._user_management_page = UserManagementPage()
         self._stack.addWidget(self._user_management_page)
         self._stack.setCurrentWidget(self._user_management_page)
@@ -169,38 +193,53 @@ class MainWindow(QMainWindow):
             self._page_widgets[page_id] = widget
 
         self._settings_page.settings_changed.connect(self._on_settings_changed)
-        self._settings_page.camera_config_changed.connect(self._on_camera_config_changed)
+        self._settings_page.camera_config_changed.connect(
+            self._on_camera_config_changed
+        )
+        self._settings_page.theme_changed.connect(self._on_theme_changed)
 
         self._switch_page("dashboard")
         self.statusBar().showMessage("Ready")
+        
+        # Apply saved theme
+        settings = load_ui_settings()
+        theme = settings.get("theme", "dark")
+        self._apply_theme(theme)
 
     def _on_camera_config_changed(self, settings: dict):
-        from app.camera.camera_worker import CameraWorker
-        camera_indices = settings.get("camera_indices", "")
-        auto_start = settings.get("auto_start_cameras", False)
-        
-        if not hasattr(self, '_camera_workers'):
-            self._camera_workers = {}
-        
-        if camera_indices:
-            try:
-                indices = [int(x.strip()) for x in camera_indices.split(",") if x.strip()]
-                for idx in indices:
-                    if idx not in self._camera_workers:
-                        worker = CameraWorker(camera_index=idx, fps=30)
-                        worker.frame_ready.connect(self._detection_page.on_frame_ready)
-                        worker.start()
-                        self._camera_workers[idx] = worker
-                    self._detection_page.register_camera(idx)
-                
-                if auto_start and indices:
-                    self._detection_page.start_detection()
-            except ValueError:
-                pass
+        self._apply_saved_camera_config(settings)
 
     def _on_settings_changed(self, settings: dict):
         self._detection_page.apply_runtime_settings(settings)
         self._about_page.refresh()
+
+    def _apply_saved_camera_config(self, settings: dict):
+        desired_sources = get_saved_camera_sources(settings)
+        desired_ids = {int(entry["camera_id"]) for entry in desired_sources}
+
+        for camera_id in list(self._camera_workers):
+            if camera_id in desired_ids:
+                continue
+            self._camera_workers[camera_id].stop()
+            self._camera_workers.pop(camera_id, None)
+            self._detection_page.unregister_camera(camera_id)
+
+        for entry in desired_sources:
+            camera_id = int(entry["camera_id"])
+            if camera_id not in self._camera_workers:
+                worker = CameraWorker(
+                    camera_index=camera_id,
+                    fps=30,
+                    source=entry["source"],
+                    display_name=str(entry["label"]),
+                )
+                worker.frame_ready.connect(self._detection_page.on_frame_ready)
+                self._camera_workers[camera_id] = worker
+                worker.start()
+            self._detection_page.register_camera(camera_id, str(entry["label"]))
+
+        if bool(settings.get("auto_start_cameras", False)) and desired_sources:
+            self._detection_page.start_detection()
 
     def _switch_page(self, page_id: str):
         if not is_authenticated():
@@ -218,3 +257,25 @@ class MainWindow(QMainWindow):
         elif page_id == "about":
             self._about_page.refresh()
         self.statusBar().showMessage(page_id.upper())
+
+    def _apply_theme(self, theme: str):
+        """Apply the specified theme to the application."""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            theme_enum = Theme(theme.lower())
+            stylesheet = generate_stylesheet(theme_enum)
+            QApplication.instance().setStyleSheet(stylesheet)
+        except (ValueError, AttributeError):
+            # If invalid theme, default to dark
+            stylesheet = generate_stylesheet(Theme.DARK)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.instance().setStyleSheet(stylesheet)
+
+    def _on_theme_changed(self, theme: str):
+        """Handle theme change signal from settings page."""
+        self._apply_theme(theme)
+
+    def closeEvent(self, event):
+        for worker in self._camera_workers.values():
+            worker.stop()
+        super().closeEvent(event)

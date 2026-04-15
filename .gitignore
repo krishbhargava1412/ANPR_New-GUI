@@ -32,4 +32,4 @@ outputs/snapshots/
 outputs/watchlist.txt
 
 # EasyOCR downloaded runtime assets
-assets/easyocr/
+assets/awiros_anpr

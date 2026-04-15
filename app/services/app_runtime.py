@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import csv
+import importlib.metadata
 import importlib.util
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,14 @@ from app.storage import (
     get_plate_log_path,
     ensure_storage_dirs,
     get_db_path,
-    get_easyocr_dir,
+    get_awiros_anpr_dir,
 )
 
 from app.detection.legacy_backend import (
     DEFAULT_CONFIDENCE_THRESHOLD,
+    PADDLEOCR_SOURCE_DIR,
+    _prepare_paddle_windows_runtime,
+    current_runtime_devices,
     ensure_runtime_dirs,
     loaded_model_path,
 )
@@ -26,7 +30,7 @@ from app.detection.legacy_backend import (
 
 OUTPUTS_DIR = get_snapshots_dir()
 OUTPUT_LOG_DIR = get_logs_dir()
-OCR_DIR = get_easyocr_dir()
+OCR_DIR = get_awiros_anpr_dir()
 SNAPSHOT_DIR = get_snapshots_dir()
 WATCHLIST_PATH = get_watchlist_path()
 PLATE_LOG_PATH = get_plate_log_path()
@@ -43,6 +47,11 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "frame_skip": 5,
     "save_snapshots": True,
     "watchlist_alerts_enabled": True,
+    "camera_indices": "",
+    "default_camera": -1,
+    "auto_start_cameras": False,
+    "ip_camera_urls": "",
+    "theme": "dark",
 }
 
 
@@ -73,6 +82,60 @@ def save_ui_settings(settings: dict[str, Any]) -> dict[str, Any]:
     merged.update(settings)
     SETTINGS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return merged
+
+
+def parse_camera_indices(raw_value: str) -> list[int]:
+    indices: list[int] = []
+    for chunk in raw_value.replace("\n", ",").split(","):
+        value = chunk.strip()
+        if not value:
+            continue
+        try:
+            index = int(value)
+        except ValueError:
+            continue
+        if index not in indices:
+            indices.append(index)
+    return indices
+
+
+def parse_ip_camera_urls(raw_value: str) -> list[str]:
+    urls: list[str] = []
+    for line in raw_value.splitlines():
+        value = line.strip()
+        if not value or value in urls:
+            continue
+        urls.append(value)
+    return urls
+
+
+def get_saved_camera_sources(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    settings = settings or load_ui_settings()
+    sources: list[dict[str, Any]] = []
+
+    for index in parse_camera_indices(str(settings.get("camera_indices", ""))):
+        sources.append(
+            {
+                "camera_id": index,
+                "source": index,
+                "label": f"CAM {index}",
+                "kind": "local",
+            }
+        )
+
+    for offset, url in enumerate(
+        parse_ip_camera_urls(str(settings.get("ip_camera_urls", ""))), start=1
+    ):
+        sources.append(
+            {
+                "camera_id": 1000 + offset,
+                "source": url,
+                "label": f"IP Camera {offset}",
+                "kind": "ip",
+            }
+        )
+
+    return sources
 
 
 def parse_plate_log_row(row: list[str]) -> dict[str, Any] | None:
@@ -144,6 +207,13 @@ def search_plate_log(
     return matches
 
 
+def recent_detections(limit: int = 12) -> list[dict[str, Any]]:
+    entries = search_plate_log()
+    if not entries:
+        return []
+    return list(reversed(entries[-max(1, limit) :]))
+
+
 def clear_plate_log() -> None:
     if PLATE_LOG_PATH.exists():
         PLATE_LOG_PATH.unlink()
@@ -166,16 +236,35 @@ def dashboard_stats() -> dict[str, str]:
     detections = search_plate_log()
     unique_plates = len({entry["plate"] for entry in detections})
     watchlist_hits = sum(1 for entry in detections if entry["watchlist_hit"])
+    confidence_values = [
+        float(entry["confidence"])
+        for entry in detections
+        if entry.get("confidence") is not None
+    ]
     snapshot_count = (
         len(list(SNAPSHOT_DIR.glob("*.png"))) if SNAPSHOT_DIR.exists() else 0
     )
     latest = detections[-1]["timestamp"] if detections else "No detections yet"
+    recent_cutoff = datetime.now() - timedelta(minutes=5)
+    recent_hits = [
+        entry
+        for entry in detections
+        if entry["timestamp_dt"] is not None and entry["timestamp_dt"] >= recent_cutoff
+    ]
+    configured_cameras = len(get_saved_camera_sources())
     return {
         "detections": str(len(detections)),
         "plates": str(unique_plates),
         "snapshots": str(snapshot_count),
         "watchlist_hits": str(watchlist_hits),
         "latest": latest,
+        "active_cameras": str(configured_cameras),
+        "rate_per_min": f"{len(recent_hits) / 5.0:.1f}",
+        "avg_confidence": (
+            f"{(sum(confidence_values) / len(confidence_values)) * 100:.0f}%"
+            if confidence_values
+            else "--"
+        ),
     }
 
 
@@ -187,25 +276,65 @@ def dependency_status() -> dict[str, str]:
         model_path = Path(str(exc))
     packages = {
         "opencv": importlib.util.find_spec("cv2") is not None,
-        "easyocr": importlib.util.find_spec("easyocr") is not None,
+        "paddle": importlib.util.find_spec("paddle") is not None,
+        "safetensors": importlib.util.find_spec("safetensors") is not None,
         "torch": importlib.util.find_spec("torch") is not None,
         "ultralytics": importlib.util.find_spec("ultralytics") is not None,
     }
     device = "CPU"
+    yolo_device = "CPU"
+    ocr_device = "CPU"
     torch_message = "torch not installed"
     if packages["torch"]:
         import torch
 
         try:
             if torch.cuda.is_available():
-                device = f"CUDA ({torch.cuda.get_device_name(0)})"
+                yolo_device = f"CUDA ({torch.cuda.get_device_name(0)})"
             else:
                 mps = getattr(torch.backends, "mps", None)
                 if mps is not None and torch.backends.mps.is_available():
-                    device = "MPS"
+                    yolo_device = "MPS"
         except Exception:
-            device = "CPU"
+            yolo_device = "CPU"
         torch_message = f"torch {torch.__version__}"
+        if "+cpu" in torch.__version__:
+            torch_message += " (CPU build)"
+
+    paddle_message = "paddle not installed"
+    if packages["paddle"]:
+        try:
+            _prepare_paddle_windows_runtime()
+            import paddle
+
+            try:
+                if paddle.is_compiled_with_cuda():
+                    ocr_device = "CUDA"
+                else:
+                    ocr_device = "CPU"
+            except Exception:
+                ocr_device = "CPU"
+            paddle_message = f"paddle {paddle.__version__}"
+            if ocr_device == "CPU":
+                paddle_message += " (CPU build)"
+        except Exception as exc:
+            ocr_device = "GPU" if "gpu" in current_runtime_devices().get("ocr", "") else "CPU"
+            try:
+                paddle_message = (
+                    f"paddle-gpu {importlib.metadata.version('paddlepaddle-gpu')}"
+                )
+            except importlib.metadata.PackageNotFoundError:
+                paddle_message = "paddle installed"
+            if ocr_device == "GPU":
+                paddle_message += " (worker-mode GPU runtime)"
+            else:
+                paddle_message += f" (import issue: {type(exc).__name__})"
+
+    try:
+        runtime_devices = current_runtime_devices()
+        device = f"YOLO: {runtime_devices['yolo']} | OCR: {runtime_devices['ocr']}"
+    except Exception:
+        device = f"YOLO: {yolo_device} | OCR: {ocr_device}"
 
     return {
         "model_path": str(model_path),
@@ -214,7 +343,9 @@ def dependency_status() -> dict[str, str]:
         "device": device,
         "torch": torch_message,
         "opencv": "Installed" if packages["opencv"] else "Missing",
-        "easyocr": "Installed" if packages["easyocr"] else "Missing",
+        "awiros_anpr": "Ready" if PADDLEOCR_SOURCE_DIR.exists() else "Missing Source",
+        "paddle": paddle_message,
+        "safetensors": "Installed" if packages["safetensors"] else "Missing",
         "ultralytics": "Installed" if packages["ultralytics"] else "Missing",
         "plate_log": str(PLATE_LOG_PATH),
         "watchlist": str(WATCHLIST_PATH),

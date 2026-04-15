@@ -1,26 +1,32 @@
 from __future__ import annotations
 
 import csv
-import string
+import importlib.util
 import logging
+import os
+import pickle
 import re
+import struct
+import subprocess
+import string
+import atexit
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+import sys
 
 import cv2
-from PIL import Image
+import numpy as np
 
 from app.storage import (
     get_snapshots_dir,
     get_logs_dir,
     get_watchlist_path,
     get_plate_log_path,
-    get_easyocr_dir,
-    get_easyocr_model_dir,
-    get_easyocr_network_dir,
+    get_awiros_anpr_dir,
+    get_awiros_model_dir,
+    get_awiros_dict_path,
     get_model_path,
     ensure_storage_dirs,
 )
@@ -30,9 +36,12 @@ LOGGER = logging.getLogger("anpr_new_gui.detection")
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_DIR = APP_ROOT / "assets"
-OCR_DIR = get_easyocr_dir()
-OCR_MODEL_DIR = get_easyocr_model_dir()
-OCR_NETWORK_DIR = get_easyocr_network_dir()
+PADDLEOCR_SOURCE_DIR = APP_ROOT.parent / "PaddleOCR"
+OCR_DIR = get_awiros_anpr_dir()
+OCR_MODEL_DIR = get_awiros_model_dir()
+OCR_DICT_PATH = get_awiros_dict_path()
+OCR_CONFIG_PATH = OCR_MODEL_DIR / "inference.yml"
+OCR_WEIGHTS_PATH = OCR_MODEL_DIR / "model.safetensors"
 OUTPUTS_DIR = get_snapshots_dir()
 OUTPUT_LOG_DIR = get_logs_dir()
 SNAPSHOT_DIR = get_snapshots_dir()
@@ -79,53 +88,278 @@ _reader_lock = Lock()
 _model_lock = Lock()
 _watchlist_cache: set[str] = set()
 _watchlist_mtime: float = -1.0
+_paddle_dll_handles: list[object] = []
+_ocr_process = None
 
 
 def ensure_runtime_dirs() -> None:
     ensure_storage_dirs()
 
 
+def validate_detection_runtime() -> None:
+    missing: list[str] = []
+    for module_name, label in (
+        ("cv2", "opencv-python"),
+        ("torch", "torch"),
+        ("ultralytics", "ultralytics"),
+        ("yaml", "PyYAML"),
+        ("paddle", "paddlepaddle"),
+        ("safetensors", "safetensors"),
+    ):
+        if importlib.util.find_spec(module_name) is None:
+            missing.append(label)
+
+    if missing:
+        raise RuntimeError(
+            "Missing runtime dependencies: " + ", ".join(missing)
+        )
+
+    if not OCR_DICT_PATH.exists():
+        raise FileNotFoundError(f"Awiros OCR dictionary not found: {OCR_DICT_PATH}")
+    if not OCR_CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Awiros OCR config not found: {OCR_CONFIG_PATH}")
+    if not OCR_WEIGHTS_PATH.exists():
+        raise FileNotFoundError(
+            f"Awiros OCR weights not found: {OCR_WEIGHTS_PATH}"
+        )
+    if not PADDLEOCR_SOURCE_DIR.exists():
+        raise FileNotFoundError(
+            "PaddleOCR source directory not found at "
+            f"{PADDLEOCR_SOURCE_DIR}. Clone the official PaddleOCR repo there."
+        )
+
+    resolve_plate_model_path()
+
+
 def resolve_plate_model_path() -> Path:
     if LEGACY_LICENSE_PLATE_MODEL_PATH.exists():
         return LEGACY_LICENSE_PLATE_MODEL_PATH
-    
+
     legacy_fallback = APP_ROOT / "assets" / "models" / "LicensePlateDetector.pt"
     if legacy_fallback.exists():
         return legacy_fallback
-    
+
     raise FileNotFoundError(
         "Legacy plate model not found at "
         f"{LEGACY_LICENSE_PLATE_MODEL_PATH}"
     )
 
 
-def _patch_pillow_resampling_compat() -> None:
-    if hasattr(Image, "ANTIALIAS"):
+def _load_awiros_config() -> dict[str, object]:
+    import yaml
+
+    if not OCR_CONFIG_PATH.exists():
+        return {}
+    with OCR_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _preferred_ocr_device() -> str:
+    try:
+        return _preferred_torch_device()
+    except Exception:
+        return "cpu"
+
+
+def _prepare_paddle_windows_runtime() -> None:
+    if os.name != "nt":
         return
-    resampling = getattr(Image, "Resampling", None)
-    if resampling is not None and hasattr(resampling, "LANCZOS"):
-        Image.ANTIALIAS = resampling.LANCZOS
+
+    nvidia_root = Path(sys_prefix_site_packages()) / "nvidia"
+    if not nvidia_root.exists():
+        return
+
+    for subdir in nvidia_root.iterdir():
+        if not subdir.is_dir():
+            continue
+        for folder_name in ("bin", "lib"):
+            candidate = subdir / folder_name
+            if not candidate.exists():
+                continue
+            try:
+                handle = os.add_dll_directory(str(candidate))
+                _paddle_dll_handles.append(handle)
+            except (AttributeError, FileNotFoundError, OSError):
+                pass
+            current_path = os.environ.get("PATH", "")
+            if str(candidate) not in current_path:
+                os.environ["PATH"] = str(candidate) + os.pathsep + current_path
 
 
-def create_easyocr_reader():
-    import easyocr
+def sys_prefix_site_packages() -> str:
+    import site
 
-    ensure_runtime_dirs()
-    _patch_pillow_resampling_compat()
-    return easyocr.Reader(
-        ["en"],
-        gpu=False,
-        verbose=False,
-        model_storage_directory=str(OCR_MODEL_DIR),
-        user_network_directory=str(OCR_NETWORK_DIR),
+    candidates = []
+    try:
+        candidates.extend(site.getsitepackages())
+    except Exception:
+        pass
+    user_site = getattr(site, "getusersitepackages", lambda: None)()
+    if user_site:
+        candidates.append(user_site)
+    for candidate in candidates:
+        if (
+            candidate
+            and "site-packages" in candidate.lower()
+            and Path(candidate).exists()
+        ):
+            return candidate
+    return str(
+        Path(__file__).resolve().parents[2] / ".venv" / "Lib" / "site-packages"
     )
+
+
+def _preferred_paddle_device() -> str:
+    if os.name == "nt":
+        try:
+            from importlib import metadata
+
+            metadata.version("paddlepaddle-gpu")
+            return "gpu:0"
+        except Exception:
+            return "cpu"
+    try:
+        _prepare_paddle_windows_runtime()
+        import paddle
+
+        if paddle.is_compiled_with_cuda():
+            return "gpu:0"
+    except Exception:
+        return "cpu"
+    return "cpu"
+
+
+def _get_paddle_device() -> str:
+    try:
+        return _preferred_paddle_device()
+    except Exception:
+        return "cpu"
+
+
+class AwirosAnprReader:
+    def __init__(self) -> None:
+        self._config = _load_awiros_config()
+        self._characters = self._load_characters()
+        self._blank_idx = 0
+        self._backend = self._build_backend()
+
+    def _load_characters(self) -> list[str]:
+        chars = [
+            line.strip("\r\n")
+            for line in OCR_DICT_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if " " not in chars:
+            chars.append(" ")
+        return chars
+
+    def _build_backend(self):
+        _prepare_paddle_windows_runtime()
+        import paddle
+        import yaml
+        from safetensors import safe_open
+
+        import sys
+
+        if str(PADDLEOCR_SOURCE_DIR) not in sys.path:
+            sys.path.insert(0, str(PADDLEOCR_SOURCE_DIR))
+
+        from ppocr.modeling.architectures import build_model
+
+        rec_cfg = self._config.get("Rec", {})
+        self._drop_score = float(rec_cfg.get("drop_score", OCR_MIN_SCORE))
+        self._input_shape = tuple(
+            int(part.strip())
+            for part in str(rec_cfg.get("rec_image_shape", "3,48,320")).split(",")
+        )
+        self._device = _get_paddle_device()
+        paddle.set_device(self._device)
+
+        config_path = PADDLEOCR_SOURCE_DIR / "configs" / "rec" / "PP-OCRv5" / "PP-OCRv5_server_rec.yml"
+        with config_path.open("r", encoding="utf-8") as handle:
+            model_cfg = yaml.safe_load(handle)
+        model_cfg["Architecture"]["Head"]["out_channels_list"] = {
+            "CTCLabelDecode": len(self._characters) + 1,
+            "NRTRLabelDecode": len(self._characters) + 4,
+        }
+
+        model = build_model(model_cfg["Architecture"])
+        state_dict = {}
+        with safe_open(str(OCR_WEIGHTS_PATH), framework="np") as handle:
+            for key in handle.keys():
+                state_dict[key] = paddle.to_tensor(handle.get_tensor(key))
+        model.set_state_dict(state_dict)
+        model.eval()
+        return model
+
+    def _prepare_image(self, image: np.ndarray) -> np.ndarray:
+        if image is None or getattr(image, "size", 0) == 0:
+            return np.zeros(self._input_shape, dtype=np.float32)
+
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        img_c, img_h, img_w = self._input_shape
+        resized = cv2.resize(image, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
+        normalized = resized.astype("float32").transpose((2, 0, 1)) / 255.0
+        normalized -= 0.5
+        normalized /= 0.5
+        if normalized.shape[0] != img_c:
+            normalized = normalized[:img_c]
+        return normalized.astype(np.float32, copy=False)
+
+    def _decode_ctc(self, probs: np.ndarray) -> tuple[str, float]:
+        if probs.ndim != 2:
+            return "", 0.0
+        indices = probs.argmax(axis=1)
+        scores = probs.max(axis=1)
+        text_chars: list[str] = []
+        text_scores: list[float] = []
+        prev_idx = None
+        for idx, score in zip(indices.tolist(), scores.tolist()):
+            if idx == self._blank_idx or idx == prev_idx:
+                prev_idx = idx
+                continue
+            char_idx = idx - 1
+            if 0 <= char_idx < len(self._characters):
+                text_chars.append(self._characters[char_idx])
+                text_scores.append(float(score))
+            prev_idx = idx
+        if not text_chars:
+            return "", 0.0
+        return "".join(text_chars), float(sum(text_scores) / len(text_scores))
+
+    def readtext(self, image) -> list[tuple[None, str, float]]:
+        _prepare_paddle_windows_runtime()
+        import paddle
+
+        paddle.set_device(self._device)
+        prepared = self._prepare_image(image)
+        batch = paddle.to_tensor(np.expand_dims(prepared, axis=0))
+        with paddle.no_grad():
+            probs = self._backend(batch).numpy()[0]
+        text, score = self._decode_ctc(probs)
+        if text and score >= self._drop_score:
+            return [(None, text, score)]
+        return []
+
+
+def create_awiros_reader():
+    ensure_runtime_dirs()
+    validate_detection_runtime()
+    if os.name == "nt":
+        return AwirosAnprProcessProxy()
+    return AwirosAnprReader()
 
 
 def get_reader():
     global _reader
     with _reader_lock:
         if _reader is None:
-            _reader = create_easyocr_reader()
+            _reader = create_awiros_reader()
         return _reader
 
 
@@ -168,6 +402,93 @@ def _get_safe_device() -> str:
         return _preferred_torch_device()
     except Exception:
         return "cpu"
+
+
+def current_runtime_devices() -> dict[str, str]:
+    return {
+        "yolo": _get_safe_device(),
+        "ocr": _get_paddle_device(),
+    }
+
+
+def _shutdown_ocr_process() -> None:
+    global _ocr_process
+
+    process = _ocr_process
+    if process is not None and process.poll() is None:
+        try:
+            _ocr_send_message(process.stdin, None)
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=2)
+        except Exception:
+            pass
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except Exception:
+            pass
+    _ocr_process = None
+
+
+def _ocr_send_message(stream, payload) -> None:
+    data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+    stream.write(struct.pack(">I", len(data)))
+    stream.write(data)
+    stream.flush()
+
+
+def _ocr_read_exact(stream, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            raise EOFError("OCR worker pipe closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _ocr_receive_message(stream):
+    size = struct.unpack(">I", _ocr_read_exact(stream, 4))[0]
+    return pickle.loads(_ocr_read_exact(stream, size))
+
+
+class AwirosAnprProcessProxy:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._ensure_process()
+
+    def _ensure_process(self) -> None:
+        global _ocr_process
+
+        if _ocr_process is not None and _ocr_process.poll() is None:
+            return
+
+        _ocr_process = subprocess.Popen(
+            [sys.executable, "-m", "app.detection.awiros_worker"],
+            cwd=str(APP_ROOT),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+
+    def readtext(self, image) -> list[tuple[None, str, float]]:
+        self._ensure_process()
+        with self._lock:
+            if _ocr_process is None or _ocr_process.stdin is None or _ocr_process.stdout is None:
+                raise RuntimeError("OCR worker failed to start")
+            _ocr_send_message(_ocr_process.stdin, image)
+            payload = _ocr_receive_message(_ocr_process.stdout)
+            error = payload.get("error")
+            if error:
+                raise RuntimeError(error)
+            return payload.get("result", [])
+
+
+atexit.register(_shutdown_ocr_process)
 
 
 def load_plate_model():
@@ -274,11 +595,11 @@ def preprocess_plate_crop(license_plate_crop):
     if license_plate_crop is None or getattr(license_plate_crop, "size", 0) == 0:
         return license_plate_crop
     image = license_plate_crop
-    if len(image.shape) == 3:
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    image = cv2.resize(image, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-    image = cv2.bilateralFilter(image, 7, 35, 35)
-    _, image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if len(image.shape) == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    height, width = image.shape[:2]
+    if min(height, width) < 32:
+        image = cv2.resize(image, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     return image
 
 

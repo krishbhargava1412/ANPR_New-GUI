@@ -49,16 +49,16 @@ def get_assets_dir() -> Path:
     return USER_DATA_DIR / "assets"
 
 
-def get_easyocr_dir() -> Path:
-    return get_assets_dir() / "easyocr"
+def get_awiros_anpr_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "assets" / "awiros_anpr"
 
 
-def get_easyocr_model_dir() -> Path:
-    return get_easyocr_dir() / "model"
+def get_awiros_model_dir() -> Path:
+    return get_awiros_anpr_dir() / "model"
 
 
-def get_easyocr_network_dir() -> Path:
-    return get_easyocr_dir() / "user_network"
+def get_awiros_dict_path() -> Path:
+    return get_awiros_anpr_dir() / "en_dict.txt"
 
 
 def get_model_path(model_name: str) -> Path:
@@ -74,8 +74,6 @@ def ensure_storage_dirs() -> None:
         get_snapshots_dir(),
         get_logs_dir(),
         get_assets_dir(),
-        get_easyocr_model_dir(),
-        get_easyocr_network_dir(),
     ]
     for directory in dirs:
         directory.mkdir(parents=True, exist_ok=True)
