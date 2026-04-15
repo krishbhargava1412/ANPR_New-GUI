@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QTabWidget,
     QHeaderView,
+    QSizePolicy,
 )
 
 from app.services.app_runtime import (
@@ -101,9 +102,22 @@ class DashboardPage(QWidget):
         self.refresh()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 24)
         layout.setSpacing(14)
+        self._root_layout = layout
         layout.addLayout(_page_header("Dashboard", "Live surveillance overview, evidence triage, and system health"))
 
         ticker = QFrame()
@@ -116,10 +130,15 @@ class DashboardPage(QWidget):
         ticker_row.addStretch()
         layout.addWidget(ticker)
 
-        body = QHBoxLayout()
-        body.setSpacing(14)
+        self._body_grid = QGridLayout()
+        self._body_grid.setContentsMargins(0, 0, 0, 0)
+        self._body_grid.setHorizontalSpacing(14)
+        self._body_grid.setVerticalSpacing(14)
 
-        left = QVBoxLayout()
+        left_panel = QWidget()
+        self._left_panel = left_panel
+        left = QVBoxLayout(left_panel)
+        left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(14)
 
         evidence_card = QFrame()
@@ -152,6 +171,7 @@ class DashboardPage(QWidget):
             evidence_meta.addWidget(val, idx, 1)
         evidence_layout.addLayout(evidence_meta)
         left.addWidget(evidence_card, stretch=3)
+        self._evidence_card = evidence_card
 
         recent_card = QFrame()
         recent_card.setObjectName("monitorPanel")
@@ -171,10 +191,12 @@ class DashboardPage(QWidget):
         self._recent_table.itemSelectionChanged.connect(self._update_preview)
         recent_layout.addWidget(self._recent_table)
         left.addWidget(recent_card, stretch=2)
+        self._recent_card = recent_card
 
-        body.addLayout(left, stretch=3)
-
-        right = QVBoxLayout()
+        right_panel = QWidget()
+        self._right_panel = right_panel
+        right = QVBoxLayout(right_panel)
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(14)
 
         metrics_card = QFrame()
@@ -196,6 +218,7 @@ class DashboardPage(QWidget):
             self._value_labels[key] = value_label
             metrics_layout.addWidget(card, index // 2, index % 2)
         right.addWidget(metrics_card)
+        self._metrics_card = metrics_card
 
         trend_card = QFrame()
         trend_card.setObjectName("monitorPanel")
@@ -211,7 +234,7 @@ class DashboardPage(QWidget):
             label.setWordWrap(True)
             self._trend_labels[key] = label
             trend_layout.addWidget(label)
-        right.addWidget(trend_card)
+        self._trend_card = trend_card
 
         self._system_box = QGroupBox("Collapsed System Telemetry")
         self._system_box.setCheckable(True)
@@ -235,23 +258,15 @@ class DashboardPage(QWidget):
             self._system_labels[key] = value
             system_layout.addWidget(key_label, idx, 0)
             system_layout.addWidget(value, idx, 1)
-        right.addWidget(self._system_box)
         right.addStretch()
-        body.addLayout(right, stretch=2)
-        layout.addLayout(body, stretch=1)
-
-        actions = QHBoxLayout()
-        for text, handler in (
-            ("REFRESH", self.refresh),
-            ("CLEAR LOG", self._clear_log),
-            ("CLEAR OUTPUTS", self._clear_outputs),
-        ):
-            btn = QPushButton(text)
-            btn.setObjectName("secondaryButton")
-            btn.clicked.connect(handler)
-            actions.addWidget(btn)
-        actions.addStretch()
-        layout.addLayout(actions)
+        self._body_grid.addWidget(left_panel, 0, 0)
+        self._body_grid.addWidget(right_panel, 0, 1)
+        self._body_grid.setColumnStretch(0, 1)
+        self._body_grid.setColumnStretch(1, 0)
+        layout.addLayout(self._body_grid, stretch=1)
+        self._trend_card.hide()
+        self._system_box.hide()
+        self.apply_responsive_layout("medium", 1366)
 
     def refresh(self):
         stats = dashboard_stats()
@@ -347,6 +362,34 @@ class DashboardPage(QWidget):
             self._preview.setPixmap(QPixmap())
             self._preview.setText("Snapshot unavailable")
 
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        margins = {
+            "small": (16, 16, 16, 12),
+            "medium": (22, 22, 22, 16),
+            "large": (28, 28, 28, 24),
+        }[breakpoint]
+        self._root_layout.setContentsMargins(*margins)
+
+        while self._body_grid.count():
+            self._body_grid.takeAt(0)
+
+        if breakpoint == "small":
+            self._right_panel.setMaximumWidth(16777215)
+            self._recent_table.setMaximumHeight(16777215)
+            self._preview.setMinimumHeight(240)
+            self._body_grid.addWidget(self._left_panel, 0, 0)
+            self._body_grid.addWidget(self._right_panel, 1, 0)
+            self._body_grid.setColumnStretch(0, 1)
+            self._body_grid.setColumnStretch(1, 0)
+        else:
+            self._right_panel.setMaximumWidth(320 if breakpoint == "medium" else 360)
+            self._recent_table.setMaximumHeight(220 if breakpoint == "medium" else 260)
+            self._preview.setMinimumHeight(320 if breakpoint == "large" else 280)
+            self._body_grid.addWidget(self._left_panel, 0, 0)
+            self._body_grid.addWidget(self._right_panel, 0, 1)
+            self._body_grid.setColumnStretch(0, 1)
+            self._body_grid.setColumnStretch(1, 0)
+
 
 class HistoryPage(QWidget):
     def __init__(self, parent=None):
@@ -358,16 +401,33 @@ class HistoryPage(QWidget):
         self.refresh()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 24)
         layout.setSpacing(14)
+        self._root_layout = layout
         layout.addLayout(
             _page_header(
                 "History", "Investigation workflow grouped by plate, with timeline review and case notes"
             )
         )
 
-        filters = QHBoxLayout()
+        self._filters_widget = QWidget()
+        self._filters_grid = QGridLayout(self._filters_widget)
+        self._filters_grid.setContentsMargins(0, 0, 0, 0)
+        self._filters_grid.setHorizontalSpacing(12)
+        self._filters_grid.setVerticalSpacing(12)
         self._plate_edit = QLineEdit()
         self._plate_edit.setPlaceholderText("Plate text")
         self._source_edit = QLineEdit()
@@ -393,12 +453,15 @@ class HistoryPage(QWidget):
             self._conf_max,
             self._watchlist_only,
         ):
-            filters.addWidget(widget)
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._conf_min.hide()
+        self._conf_max.hide()
+        self._watchlist_only.hide()
         search_btn = QPushButton("SEARCH")
         search_btn.setObjectName("primaryButton")
         search_btn.clicked.connect(self.refresh)
-        filters.addWidget(search_btn)
-        layout.addLayout(filters)
+        self._search_btn = search_btn
+        layout.addWidget(self._filters_widget)
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
@@ -415,8 +478,10 @@ class HistoryPage(QWidget):
             summary_row.addWidget(card)
         layout.addLayout(summary_row)
 
-        splitter_row = QHBoxLayout()
-        splitter_row.setSpacing(14)
+        self._content_grid = QGridLayout()
+        self._content_grid.setContentsMargins(0, 0, 0, 0)
+        self._content_grid.setHorizontalSpacing(14)
+        self._content_grid.setVerticalSpacing(14)
 
         self._table = QTableWidget(0, 6)
         self._table.setHorizontalHeaderLabels(
@@ -426,10 +491,20 @@ class HistoryPage(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
         self._table.itemSelectionChanged.connect(self._update_preview)
-        splitter_row.addWidget(self._table, stretch=3)
+        self._table_card = QFrame()
+        self._table_card.setObjectName("monitorPanel")
+        table_card_layout = QVBoxLayout(self._table_card)
+        table_card_layout.setContentsMargins(12, 12, 12, 12)
+        table_card_layout.setSpacing(10)
+        table_card_layout.addWidget(self._table)
 
-        side = QVBoxLayout()
+        self._side_card = QFrame()
+        self._side_card.setObjectName("monitorPanel")
+        side = QVBoxLayout(self._side_card)
+        side.setContentsMargins(12, 12, 12, 12)
+        side.setSpacing(10)
         self._preview = QLabel("No plate selected")
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumSize(280, 220)
@@ -447,6 +522,7 @@ class HistoryPage(QWidget):
         self._sequence_table.verticalHeader().setVisible(False)
         self._sequence_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._sequence_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._sequence_table.setAlternatingRowColors(True)
         self._sequence_table.itemSelectionChanged.connect(self._update_sequence_preview)
         side.addWidget(self._sequence_table)
 
@@ -461,20 +537,21 @@ class HistoryPage(QWidget):
         side.addWidget(self._flag_btn)
 
         for text, handler in (
-            ("OPEN SNAPSHOT", self._open_selected_snapshot),
             ("DELETE SNAPSHOT", self._delete_selected_snapshot),
             ("DELETE HISTORY", self._delete_selected_history),
-            ("EXPORT CASE BUNDLE", self._show_sequence_summary),
-            ("ADD TO WATCHLIST", self._add_selected_to_watchlist),
         ):
             btn = QPushButton(text)
             btn.setObjectName("secondaryButton")
             btn.clicked.connect(handler)
             side.addWidget(btn)
         side.addStretch()
-        splitter_row.addLayout(side, stretch=2)
+        self._content_grid.addWidget(self._table_card, 0, 0)
+        self._content_grid.addWidget(self._side_card, 0, 1)
+        self._content_grid.setColumnStretch(0, 3)
+        self._content_grid.setColumnStretch(1, 1)
 
-        layout.addLayout(splitter_row)
+        layout.addLayout(self._content_grid, 1)
+        self.apply_responsive_layout("medium", 1366)
 
     def refresh(self):
         from_date, to_date = self._resolve_time_window()
@@ -723,6 +800,41 @@ class HistoryPage(QWidget):
             save_watchlist_entries(entries)
         QMessageBox.information(self, "Watchlist", f"{match['plate']} added to watchlist")
 
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        margins = {
+            "small": (16, 16, 16, 12),
+            "medium": (22, 22, 22, 16),
+            "large": (28, 28, 28, 24),
+        }[breakpoint]
+        self._root_layout.setContentsMargins(*margins)
+
+        while self._filters_grid.count():
+            self._filters_grid.takeAt(0)
+
+        filter_widgets = [
+            self._plate_edit,
+            self._source_edit,
+            self._time_preset,
+            self._search_btn,
+        ]
+        columns = 2 if breakpoint == "small" else (3 if breakpoint == "medium" else 4)
+        for index, widget in enumerate(filter_widgets):
+            row = index // columns
+            column = index % columns
+            self._filters_grid.addWidget(widget, row, column)
+
+        while self._content_grid.count():
+            self._content_grid.takeAt(0)
+
+        if breakpoint == "small":
+            self._content_grid.addWidget(self._table_card, 0, 0)
+            self._content_grid.addWidget(self._side_card, 1, 0)
+            self._preview.setMinimumHeight(200)
+        else:
+            self._content_grid.addWidget(self._table_card, 0, 0)
+            self._content_grid.addWidget(self._side_card, 0, 1)
+            self._preview.setMinimumHeight(220 if breakpoint == "medium" else 260)
+
 
 class SettingsPage(QWidget):
     settings_changed = pyqtSignal(dict)
@@ -749,13 +861,28 @@ class SettingsPage(QWidget):
         self._model_selector = None
         self._theme_combo = None
         self._path_edits = {}
+        self._field_labels: list[QLabel] = []
+        self._main_layout = None
         self._build_ui()
         self._load()
 
     def _build_ui(self):
-        main_layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        main_layout = QVBoxLayout(content)
         main_layout.setContentsMargins(28, 28, 28, 24)
         main_layout.setSpacing(0)
+        self._main_layout = main_layout
 
         header = QVBoxLayout()
         header.setSpacing(4)
@@ -770,6 +897,7 @@ class SettingsPage(QWidget):
 
         tabs = QTabWidget()
         tabs.setObjectName("settingsTabs")
+        self._tabs = tabs
 
         general_tab = self._tab_page()
         general_tab.layout().addWidget(
@@ -872,6 +1000,7 @@ class SettingsPage(QWidget):
         button_row.addWidget(save_btn)
 
         main_layout.addLayout(button_row)
+        self.apply_responsive_layout("medium", 1366)
 
     def _create_card(self, title: str, fields: list) -> QFrame:
         card = QFrame()
@@ -891,6 +1020,7 @@ class SettingsPage(QWidget):
             lbl = QLabel(label)
             lbl.setObjectName("settingsFieldLabel")
             lbl.setMinimumWidth(140)
+            self._field_labels.append(lbl)
 
             row.addWidget(lbl)
             row.addWidget(widget, 1)
@@ -1268,6 +1398,24 @@ class SettingsPage(QWidget):
         self._camera_status_label.setText("Connection test passed.")
         self._camera_validation.setText("Live preview captured successfully.")
 
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        margins = {
+            "small": (16, 16, 16, 12),
+            "medium": (22, 22, 22, 16),
+            "large": (28, 28, 28, 24),
+        }[breakpoint]
+        self._main_layout.setContentsMargins(*margins)
+
+        label_width = {"small": 104, "medium": 124, "large": 140}[breakpoint]
+        for label in self._field_labels:
+            label.setMinimumWidth(label_width)
+
+        self._camera_preview.setMinimumHeight(
+            180 if breakpoint == "small" else 220
+        )
+        self._ip_camera_urls.setFixedHeight(72 if breakpoint == "small" else 88)
+        self._tabs.setUsesScrollButtons(breakpoint == "small")
+
 
 
 class AboutPage(QWidget):
@@ -1278,9 +1426,22 @@ class AboutPage(QWidget):
         self.refresh()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
+        self._root_layout = layout
         layout.addLayout(
             _page_header(
                 "System Info",
@@ -1329,13 +1490,6 @@ class AboutPage(QWidget):
 
         layout.addWidget(info_box)
 
-        row = QHBoxLayout()
-        refresh_btn = QPushButton("REFRESH")
-        refresh_btn.setObjectName("secondaryButton")
-        refresh_btn.clicked.connect(self.refresh)
-        row.addWidget(refresh_btn)
-        row.addStretch()
-        layout.addLayout(row)
         layout.addStretch()
 
     def refresh(self):
@@ -1363,6 +1517,14 @@ class AboutPage(QWidget):
                     value = "Found" if value == "Yes" else "Not Found"
                 self._info_labels[label_key].setText(str(value))
 
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        margins = {
+            "small": (16, 16, 16, 12),
+            "medium": (24, 24, 24, 18),
+            "large": (36, 36, 36, 24),
+        }[breakpoint]
+        self._root_layout.setContentsMargins(*margins)
+
 
 class UserManagementPage(QWidget):
     def __init__(self, parent=None):
@@ -1372,9 +1534,22 @@ class UserManagementPage(QWidget):
         self._refresh_users()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
+        self._root_layout = layout
         layout.addLayout(
             _page_header("User Management", "Manage system users and roles")
         )
@@ -1422,6 +1597,7 @@ class UserManagementPage(QWidget):
 
         layout.addLayout(form_layout)
         layout.addLayout(btn_layout)
+        self.apply_responsive_layout("medium", 1366)
 
     def _refresh_users(self):
         from app.storage.database import get_all_users
@@ -1519,3 +1695,11 @@ class UserManagementPage(QWidget):
                 self._refresh_users()
             else:
                 QMessageBox.warning(self, "Error", "Failed to delete user")
+
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        margins = {
+            "small": (16, 16, 16, 12),
+            "medium": (24, 24, 24, 18),
+            "large": (36, 36, 36, 24),
+        }[breakpoint]
+        self._root_layout.setContentsMargins(*margins)

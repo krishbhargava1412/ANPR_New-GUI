@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QPoint, QSize, Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -45,6 +45,9 @@ class PlaceholderPage(QWidget):
 
 
 class MainWindow(QMainWindow):
+    _SMALL_BP = 1280
+    _MEDIUM_BP = 1600
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Vision - ANPR Command Center")
@@ -157,6 +160,7 @@ class MainWindow(QMainWindow):
         self._user_management_page = UserManagementPage()
         self._stack.addWidget(self._user_management_page)
         self._stack.setCurrentWidget(self._user_management_page)
+        self._apply_responsive_layouts()
 
     def _build_ui(self):
         central = QWidget()
@@ -209,6 +213,7 @@ class MainWindow(QMainWindow):
         settings = load_ui_settings()
         theme = settings.get("theme", "dark")
         self._apply_theme(theme)
+        self._apply_responsive_layouts()
 
     def _on_camera_config_changed(self, settings: dict):
         self._apply_saved_camera_config(settings)
@@ -294,7 +299,39 @@ class MainWindow(QMainWindow):
         if self._user_menu is None:
             return
         self._update_user_menu()
-        self._user_menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+        self._user_menu.adjustSize()
+        menu_size = self._user_menu.sizeHint()
+        anchor = button.mapToGlobal(button.rect().topLeft())
+        popup_x = anchor.x() + max(0, button.width() - menu_size.width())
+        popup_y = anchor.y() - menu_size.height() - 8
+        self._user_menu.popup(QPoint(popup_x, popup_y))
+
+    def _breakpoint_for_width(self, width: int) -> str:
+        if width < self._SMALL_BP:
+            return "small"
+        if width < self._MEDIUM_BP:
+            return "medium"
+        return "large"
+
+    def _apply_responsive_layouts(self):
+        breakpoint = self._breakpoint_for_width(self.width())
+        if hasattr(self._sidebar, "apply_responsive_layout"):
+            self._sidebar.apply_responsive_layout(breakpoint, self.width())
+
+        for widget in self._page_widgets.values():
+            if hasattr(widget, "apply_responsive_layout"):
+                widget.apply_responsive_layout(breakpoint, self.width())
+
+        if hasattr(self, "_user_management_page") and hasattr(
+            self._user_management_page, "apply_responsive_layout"
+        ):
+            self._user_management_page.apply_responsive_layout(
+                breakpoint, self.width()
+            )
+
+    def resizeEvent(self, event):
+        self._apply_responsive_layouts()
+        super().resizeEvent(event)
 
     def closeEvent(self, event):
         for worker in self._camera_workers.values():

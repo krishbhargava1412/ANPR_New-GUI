@@ -8,89 +8,100 @@ class Theme(Enum):
     DARK = "dark"
     LIGHT = "light"
 
-
 def get_theme_colors(theme: Theme | str) -> dict[str, str]:
-    """Get color palette for the specified theme."""
+    """Material + Neumorphic grayscale palette with correct elevation (background darker than components)."""
     if isinstance(theme, str):
         theme = Theme(theme)
-    
+
     if theme == Theme.DARK:
         return {
-            # Base colors
-            "bg_primary": "#0f172a",
-            "bg_secondary": "#111c34",
-            "bg_tertiary": "#1e293b",
-            "bg_hover": "#263244",
-            
-            # Text colors
-            "text_primary": "#f8fafc",
-            "text_secondary": "#cbd5e1",
-            "text_tertiary": "#94a3b8",
-            "text_muted": "#64748b",
-            
-            # Border colors
-            "border_primary": "#243145",
-            "border_secondary": "#334155",
-            "border_tertiary": "#182235",
-            
-            # Accent colors
-            "accent": "#3b82f6",
-            "accent_hover": "#60a5fa",
-            "accent_pressed": "#2563eb",
-            "success": "#22c55e",
-            "warning": "#f59e0b",
-            "error": "#ef4444",
-            "error_hover": "#3b1215",
-            
-            # Status indicators
-            "status_active": "#22c55e",
-            "status_inactive": "#64748b",
-            "status_error": "#ef4444",
-            
-            # Special
-            "input_bg": "#0b1324",
-            "card_bg": "#111c34",
-            "log_bg": "#09111f",
-        }
-    else:  # LIGHT theme
-        return {
-            # Base colors
-            "bg_primary": "#ffffff",
-            "bg_secondary": "#f5f5f5",
-            "bg_tertiary": "#efefef",
-            "bg_hover": "#e8e8e8",
-            
-            # Text colors
-            "text_primary": "#1a1a1a",
-            "text_secondary": "#555555",
-            "text_tertiary": "#777777",
-            "text_muted": "#999999",
-            
-            # Border colors
-            "border_primary": "#e0e0e0",
-            "border_secondary": "#d0d0d0",
-            "border_tertiary": "#dadada",
-            
-            # Accent colors
-            "accent": "#0066cc",
-            "accent_hover": "#0052a3",
-            "accent_pressed": "#00539a",
-            "success": "#00aa44",
-            "warning": "#ff9900",
-            "error": "#dd0000",
-            "error_hover": "#cc0000",
-            
-            # Status indicators
-            "status_active": "#00aa44",
-            "status_inactive": "#cccccc",
-            "status_error": "#dd0000",
-            
-            # Special
-            "input_bg": "#ffffff",
-            "card_bg": "#f9f9f9",
-            "log_bg": "#fafafa",
+            # Base (background darkest → components lighter)
+            "bg_primary": "#000000",
+            "bg_secondary": "#0a0a0a",
+            "bg_tertiary": "#121212",
+            "bg_hover": "#1a1a1a",
+
+            # Text
+            "text_primary": "#ffffff",
+            "text_secondary": "#d4d4d4",
+            "text_tertiary": "#a3a3a3",
+            "text_muted": "#737373",
+
+            # Borders
+            "border_primary": "#1c1c1c",
+            "border_secondary": "#262626",
+            "border_tertiary": "#141414",
+
+            # Accent (neutral grayscale)
+            "accent": "#2e2e2e",
+            "accent_hover": "#3a3a3a",
+            "accent_pressed": "#242424",
+
+            # Semantic (still neutral)
+            "success": "#3a3a3a",
+            "warning": "#4a4a4a",
+            "error": "#2a2a2a",
+            "error_hover": "#1a1a1a",
+
+            # Status
+            "status_active": "#4a4a4a",
+            "status_inactive": "#2a2a2a",
+            "status_error": "#2a2a2a",
+
+            # Surfaces (lighter than bg → correct elevation)
+            "input_bg": "#141414",
+            "card_bg": "#181818",
+            "log_bg": "#101010",
+
+            # Neumorphic shadows (inset contrast)
+            "shadow_light": "rgba(255,255,255,0.05)",
+            "shadow_dark": "rgba(0,0,0,0.95)",
         }
 
+    else:
+        return {
+            # Base (background light → components slightly darker)
+            "bg_primary": "#f5f5f5",
+            "bg_secondary": "#eeeeee",
+            "bg_tertiary": "#e4e4e4",
+            "bg_hover": "#dadada",
+
+            # Text
+            "text_primary": "#0f0f0f",
+            "text_secondary": "#404040",
+            "text_tertiary": "#6b6b6b",
+            "text_muted": "#9a9a9a",
+
+            # Borders
+            "border_primary": "#dcdcdc",
+            "border_secondary": "#cfcfcf",
+            "border_tertiary": "#e8e8e8",
+
+            # Accent
+            "accent": "#3a3a3a",
+            "accent_hover": "#2a2a2a",
+            "accent_pressed": "#1f1f1f",
+
+            # Semantic
+            "success": "#4a4a4a",
+            "warning": "#6a6a6a",
+            "error": "#2a2a2a",
+            "error_hover": "#1a1a1a",
+
+            # Status
+            "status_active": "#4a4a4a",
+            "status_inactive": "#cfcfcf",
+            "status_error": "#2a2a2a",
+
+            # Surfaces (darker than background → elevation)
+            "input_bg": "#ffffff",
+            "card_bg": "#ffffff",
+            "log_bg": "#fafafa",
+
+            # Neumorphic shadows
+            "shadow_light": "rgba(255,255,255,0.9)",
+            "shadow_dark": "rgba(0,0,0,0.08)",
+        }
 
 def generate_stylesheet(theme: Theme | str) -> str:
     """Generate complete stylesheet for the specified theme."""
@@ -144,11 +155,16 @@ QPushButton#sidebarAccountTextButton {{
     background-color: transparent;
     border: none;
     text-align: left;
-    padding: 0;
+    padding: 2px 0;
 }}
 
 QPushButton#sidebarAccountTextButton:hover {{
     background-color: transparent;
+}}
+
+QFrame#sidebarAccountButton:hover {{
+    border-color: {colors['border_secondary']};
+    background-color: {colors['bg_hover']};
 }}
 
 QPushButton#avatarButton {{
@@ -162,6 +178,36 @@ QPushButton#avatarButton {{
 
 QPushButton#avatarButton:hover {{
     background-color: {colors['accent_hover']};
+}}
+
+QMenu {{
+    background-color: {colors['bg_secondary']};
+    color: {colors['text_primary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 12px;
+    padding: 8px;
+}}
+
+QMenu::item {{
+    padding: 10px 14px;
+    border-radius: 8px;
+    background-color: transparent;
+}}
+
+QMenu::item:selected {{
+    background-color: {colors['bg_hover']};
+    color: {colors['text_primary']};
+}}
+
+QMenu::item:disabled {{
+    color: {colors['text_tertiary']};
+    background-color: transparent;
+}}
+
+QMenu::separator {{
+    height: 1px;
+    background: {colors['border_primary']};
+    margin: 6px 8px;
 }}
 
 QPushButton#navButton {{

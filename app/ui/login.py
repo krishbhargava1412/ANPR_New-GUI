@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -34,12 +34,15 @@ class LoginDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Authentication")
         self.setModal(True)
-        self.setFixedSize(400, 300)
+        self.setMinimumSize(360, 280)
+        self.resize(420, 320)
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
+        self._root_layout = layout
 
         title = QLabel("VISION")
         title.setObjectName("appTitle")
@@ -72,7 +75,6 @@ class LoginDialog(QDialog):
 
         self._username_edit = QLineEdit()
         self._username_edit.setPlaceholderText("Username")
-        self._username_edit.setMinimumWidth(200)
         layout.addWidget(self._username_edit)
 
         self._next_btn = QPushButton("NEXT")
@@ -255,6 +257,16 @@ class LoginDialog(QDialog):
 
     def get_username(self):
         return getattr(self, '_current_username', '')
+
+    def resizeEvent(self, event):
+        width = self.width()
+        if width < 420:
+            self._root_layout.setContentsMargins(12, 12, 12, 12)
+        elif width < 560:
+            self._root_layout.setContentsMargins(16, 16, 16, 16)
+        else:
+            self._root_layout.setContentsMargins(24, 24, 24, 24)
+        super().resizeEvent(event)
 
 
 def show_login_dialog(parent=None) -> bool:

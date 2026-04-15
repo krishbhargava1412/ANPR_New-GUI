@@ -11,13 +11,6 @@ class Sidebar(QWidget):
         ("DETECTION", "detection"),
         ("HISTORY", "history"),
     ]
-    ICON_MAP = {
-        "dashboard": QStyle.StandardPixmap.SP_DesktopIcon,
-        "detection": QStyle.StandardPixmap.SP_MediaPlay,
-        "history": QStyle.StandardPixmap.SP_FileDialogDetailedView,
-        "settings": QStyle.StandardPixmap.SP_FileDialogContentsView,
-        "about": QStyle.StandardPixmap.SP_MessageBoxInformation,
-    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,10 +28,12 @@ class Sidebar(QWidget):
         title = QLabel("VISION")
         title.setObjectName("appTitle")
         layout.addWidget(title)
+        self._title_label = title
 
         subtitle = QLabel("OCR + YOLO")
         subtitle.setObjectName("appSubtitle")
         layout.addWidget(subtitle)
+        self._subtitle_label = subtitle
 
         layout.addSpacing(32)
 
@@ -51,7 +46,6 @@ class Sidebar(QWidget):
             btn = QPushButton(label)
             btn.setObjectName("navButton")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setIcon(self.style().standardIcon(self.ICON_MAP[page_id]))
             btn.clicked.connect(lambda checked, p=page_id: self._on_nav_click(p))
             self._buttons[page_id] = btn
             layout.addWidget(btn)
@@ -75,7 +69,6 @@ class Sidebar(QWidget):
             btn = QPushButton(label)
             btn.setObjectName("navButton")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setIcon(self.style().standardIcon(self.ICON_MAP[page_id]))
             btn.clicked.connect(lambda checked, p=page_id: self._on_nav_click(p))
             self._buttons[page_id] = btn
             layout.addWidget(btn)
@@ -94,9 +87,11 @@ class Sidebar(QWidget):
         self._account_button.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+        self._account_button.setMinimumHeight(64)
         account_layout = QHBoxLayout(self._account_button)
-        account_layout.setContentsMargins(10, 10, 10, 10)
-        account_layout.setSpacing(10)
+        account_layout.setContentsMargins(12, 10, 12, 10)
+        account_layout.setSpacing(12)
+        account_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self._avatar_button = QPushButton("U")
         self._avatar_button.setObjectName("avatarButton")
@@ -116,12 +111,14 @@ class Sidebar(QWidget):
 
         text_button_layout = QVBoxLayout(self._account_text_button)
         text_button_layout.setContentsMargins(0, 0, 0, 0)
-        text_button_layout.setSpacing(2)
+        text_button_layout.setSpacing(1)
 
         self._user_name_label = QLabel("Not signed in")
         self._user_name_label.setObjectName("panelTitle")
+        self._user_name_label.setWordWrap(False)
         self._user_role_label = QLabel("Guest")
         self._user_role_label.setObjectName("pageSubtitle")
+        self._user_role_label.setWordWrap(False)
         text_button_layout.addWidget(self._user_name_label)
         text_button_layout.addWidget(self._user_role_label)
         text_layout.addWidget(self._account_text_button)
@@ -134,6 +131,7 @@ class Sidebar(QWidget):
         footer_layout.addWidget(self._account_button)
         footer_layout.addWidget(version)
         layout.addWidget(footer)
+        self._version_label = version
 
         self._set_active("dashboard")
 
@@ -159,4 +157,26 @@ class Sidebar(QWidget):
         initials = "".join(part[0].upper() for part in display_name.split()[:2]) or "U"
         self._avatar_button.setText(initials[:2])
         self._user_name_label.setText(display_name)
-        self._user_role_label.setText(role.title() if role else "Guest")
+        role_text = role.title() if role else "Guest"
+        detail = f"{role_text}  |  @{username}" if username.strip() else role_text
+        self._user_role_label.setText(detail)
+
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        if breakpoint == "small":
+            self.setFixedWidth(168)
+            self._subtitle_label.hide()
+            self._version_label.hide()
+            self._user_role_label.hide()
+            self._avatar_button.setFixedSize(34, 34)
+        elif breakpoint == "medium":
+            self.setFixedWidth(188)
+            self._subtitle_label.show()
+            self._version_label.show()
+            self._user_role_label.show()
+            self._avatar_button.setFixedSize(38, 38)
+        else:
+            self.setFixedWidth(212)
+            self._subtitle_label.show()
+            self._version_label.show()
+            self._user_role_label.show()
+            self._avatar_button.setFixedSize(40, 40)

@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpacerItem,
     QSplitter,
@@ -126,6 +127,7 @@ class FeedWidget(QLabel):
         super().__init__(parent)
         self.setObjectName("feedWidget")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setScaledContents(False)
         self.setText("NO FEED\n\nSave cameras in Settings and press START DETECTION")
         self.setMinimumSize(QSize(480, 320))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -182,6 +184,11 @@ class FeedWidget(QLabel):
         annotated = self._draw(frame)
         self._last_rendered_frame = annotated
         self.setPixmap(_frame_to_pixmap(annotated, self.size()))
+
+    def resizeEvent(self, event):
+        if self._last_rendered_frame is not None:
+            self.setPixmap(_frame_to_pixmap(self._last_rendered_frame, self.size()))
+        super().resizeEvent(event)
 
     def _draw(self, frame: np.ndarray) -> np.ndarray:
         if not self._entries:
@@ -265,9 +272,22 @@ class DetectionPage(QWidget):
         self._bind_shortcuts()
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(36, 36, 36, 24)
         root.setSpacing(0)
+        self._root_layout = root
 
         header_row = QHBoxLayout()
         title = QLabel("License Plate Detection")
@@ -276,6 +296,7 @@ class DetectionPage(QWidget):
             "Live multi-camera command center with overlays, alerts, and investigation context"
         )
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
         title_col = QVBoxLayout()
         title_col.setSpacing(4)
         title_col.addWidget(title)
@@ -310,21 +331,21 @@ class DetectionPage(QWidget):
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pause_btn.clicked.connect(self._toggle_pause)
         self._pause_btn.setEnabled(False)
-        ctrl.addWidget(self._pause_btn)
+        self._pause_btn.hide()
 
         self._snapshot_btn = QPushButton("SNAPSHOT")
         self._snapshot_btn.setObjectName("secondaryButton")
         self._snapshot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._snapshot_btn.clicked.connect(self._capture_snapshot)
         self._snapshot_btn.setEnabled(False)
-        ctrl.addWidget(self._snapshot_btn)
+        self._snapshot_btn.hide()
 
         self._record_btn = QPushButton("RECORD OFF")
         self._record_btn.setObjectName("secondaryButton")
         self._record_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._record_btn.clicked.connect(self._toggle_recording)
         self._record_btn.setEnabled(False)
-        ctrl.addWidget(self._record_btn)
+        self._record_btn.hide()
 
         self._camera_combo = QComboBox()
         self._camera_combo.setObjectName("cameraCombo")
@@ -358,6 +379,7 @@ class DetectionPage(QWidget):
 
         self._status_label = QLabel("Idle - Select camera from Cameras page to begin")
         self._status_label.setObjectName("pageSubtitle")
+        self._status_label.setWordWrap(True)
         ctrl.addWidget(self._status_label)
 
         self._log_panel = LogPanel()
@@ -366,7 +388,7 @@ class DetectionPage(QWidget):
         clear_btn.setObjectName("secondaryButton")
         clear_btn.setFixedHeight(36)
         clear_btn.clicked.connect(self._on_clear_log)
-        ctrl.addWidget(clear_btn)
+        clear_btn.hide()
 
         root.addLayout(ctrl)
         root.addSpacing(16)
@@ -380,6 +402,7 @@ class DetectionPage(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("detectionSplitter")
         splitter.setHandleWidth(1)
+        self._splitter = splitter
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -424,6 +447,7 @@ class DetectionPage(QWidget):
         self._log_panel.result_selected.connect(self._select_stream_result)
         self._log_panel.result_hovered.connect(self._preview_stream_result)
         right_layout.addWidget(self._log_panel, stretch=3)
+        self._right_panel = right
 
         preview_card = QFrame()
         preview_card.setObjectName("monitorPanel")
@@ -461,6 +485,7 @@ class DetectionPage(QWidget):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, stretch=1)
+        self.apply_responsive_layout("medium", 1366)
 
     def _bind_shortcuts(self):
         QShortcut(QKeySequence("Space"), self, activated=self._toggle_detection)
@@ -1046,3 +1071,33 @@ class DetectionPage(QWidget):
         self._log_panel.clear()
         self._stream_results.clear()
         self._stream_table.setRowCount(0)
+
+    def apply_responsive_layout(self, breakpoint: str, window_width: int):
+        margins = {
+            "small": (16, 16, 16, 12),
+            "medium": (24, 24, 24, 18),
+            "large": (36, 36, 36, 24),
+        }[breakpoint]
+        self._root_layout.setContentsMargins(*margins)
+
+        if breakpoint == "small":
+            self._splitter.setOrientation(Qt.Orientation.Vertical)
+            self._camera_combo.setMinimumWidth(160)
+            self._stream_preview.setMinimumHeight(180)
+            self._feed.setMinimumHeight(280)
+            self._log_panel.setMinimumWidth(0)
+            self._splitter.setSizes([560, 380])
+        elif breakpoint == "medium":
+            self._splitter.setOrientation(Qt.Orientation.Horizontal)
+            self._camera_combo.setMinimumWidth(200)
+            self._stream_preview.setMinimumHeight(220)
+            self._feed.setMinimumHeight(360)
+            self._log_panel.setMinimumWidth(280)
+            self._splitter.setSizes([780, 420])
+        else:
+            self._splitter.setOrientation(Qt.Orientation.Horizontal)
+            self._camera_combo.setMinimumWidth(240)
+            self._stream_preview.setMinimumHeight(240)
+            self._feed.setMinimumHeight(420)
+            self._log_panel.setMinimumWidth(320)
+            self._splitter.setSizes([940, 460])
