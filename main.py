@@ -1,4 +1,11 @@
+import os
 import sys
+import warnings
+
+# Clean up console output for professional presentation
+os.environ["GLOG_minloglevel"] = "2"
+os.environ["PD_LOG_LEVEL"] = "2"
+warnings.filterwarnings("ignore", category=UserWarning, module="paddle")
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
@@ -24,12 +31,11 @@ def main():
     except ValueError:
         theme_enum = Theme.DARK
     
+    font = QFont("Segoe UI", 10)
+    app.setFont(font)
+
     stylesheet = generate_stylesheet(theme_enum)
     app.setStyleSheet(stylesheet)
-
-    font = QFont()
-    font.setPointSize(10)
-    app.setFont(font)
 
     window = MainWindow()
     window.show()

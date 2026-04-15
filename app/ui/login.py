@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -38,6 +38,8 @@ class LoginDialog(QDialog):
         self.resize(420, 320)
         self._build_ui()
 
+
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -46,14 +48,18 @@ class LoginDialog(QDialog):
 
         title = QLabel("VISION")
         title.setObjectName("appTitle")
-        title.setAlignment(QVBoxLayout().alignment())
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Enter your credentials")
+        subtitle = QLabel("Authenticate to access the ANPR Command Center")
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
         layout.addSpacing(20)
+
+        # Focus username immediately when dialog shown
+        self.showEvent = lambda e: self._username_edit.setFocus()
 
         self._stack = QStackedWidget()
 
@@ -98,7 +104,18 @@ class LoginDialog(QDialog):
         self._password_edit = QLineEdit()
         self._password_edit.setPlaceholderText("Password")
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self._password_edit)
+
+        pass_layout = QHBoxLayout()
+        pass_layout.setContentsMargins(0, 0, 0, 0)
+        pass_layout.setSpacing(8)
+        pass_layout.addWidget(self._password_edit)
+
+        self._login_toggle_btn = QPushButton("Show")
+        self._login_toggle_btn.setCheckable(True)
+        self._login_toggle_btn.clicked.connect(lambda checked: self._password_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        pass_layout.addWidget(self._login_toggle_btn)
+
+        layout.addLayout(pass_layout)
 
         btn_layout = QHBoxLayout()
         
@@ -138,12 +155,29 @@ class LoginDialog(QDialog):
         self._new_password_edit = QLineEdit()
         self._new_password_edit.setPlaceholderText("Create Password")
         self._new_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self._new_password_edit)
 
         self._confirm_password_edit = QLineEdit()
         self._confirm_password_edit.setPlaceholderText("Confirm Password")
         self._confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self._confirm_password_edit)
+        
+        pass_layout1 = QHBoxLayout()
+        pass_layout1.setContentsMargins(0, 0, 0, 0)
+        pass_layout1.addWidget(self._new_password_edit)
+        self._new_toggle_btn = QPushButton("Show")
+        self._new_toggle_btn.setCheckable(True)
+        self._new_toggle_btn.clicked.connect(lambda checked: self._new_password_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        pass_layout1.addWidget(self._new_toggle_btn)
+        
+        pass_layout2 = QHBoxLayout()
+        pass_layout2.setContentsMargins(0, 0, 0, 0)
+        pass_layout2.addWidget(self._confirm_password_edit)
+        self._confirm_toggle_btn = QPushButton("Show")
+        self._confirm_toggle_btn.setCheckable(True)
+        self._confirm_toggle_btn.clicked.connect(lambda checked: self._confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        pass_layout2.addWidget(self._confirm_toggle_btn)
+
+        layout.addLayout(pass_layout1)
+        layout.addLayout(pass_layout2)
 
         btn_layout = QHBoxLayout()
         
@@ -176,6 +210,7 @@ class LoginDialog(QDialog):
             self._login_username_label.setText(f"Welcome back, {username}")
             self._password_edit.clear()
             self._stack.setCurrentIndex(1)
+            self._password_edit.setFocus()
         else:
             if not admin_exists():
                 self._register_username_label.setText(f"First admin: {username}\nCreate password to continue")

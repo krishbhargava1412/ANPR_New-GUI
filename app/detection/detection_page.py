@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from PyQt6.QtCore import QSize, Qt, pyqtSlot
-from PyQt6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -308,11 +308,14 @@ class DetectionPage(QWidget):
         root.addLayout(header_row)
         root.addSpacing(14)
 
-        self._alert_banner = QLabel("NO ACTIVE ALERTS")
+        self._alert_queue = []
+        self._alert_banner = QPushButton("NO ACTIVE ALERTS")
         self._alert_banner.setObjectName("alertBanner")
         self._alert_banner.setProperty("state", "idle")
         self._alert_banner.setMinimumHeight(42)
-        self._alert_banner.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        from PyQt6.QtCore import Qt
+        self._alert_banner.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._alert_banner.pressed.connect(self._acknowledge_alerts)
         root.addWidget(self._alert_banner)
         root.addSpacing(14)
 
@@ -324,6 +327,7 @@ class DetectionPage(QWidget):
         self._start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._start_btn.clicked.connect(self._toggle_detection)
         self._start_btn.setEnabled(False)
+        self._start_btn.setToolTip("Configure cameras in Settings first")
         ctrl.addWidget(self._start_btn)
 
         self._pause_btn = QPushButton("PAUSE")
@@ -331,21 +335,21 @@ class DetectionPage(QWidget):
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pause_btn.clicked.connect(self._toggle_pause)
         self._pause_btn.setEnabled(False)
-        self._pause_btn.hide()
+        ctrl.addWidget(self._pause_btn)
 
         self._snapshot_btn = QPushButton("SNAPSHOT")
         self._snapshot_btn.setObjectName("secondaryButton")
         self._snapshot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._snapshot_btn.clicked.connect(self._capture_snapshot)
         self._snapshot_btn.setEnabled(False)
-        self._snapshot_btn.hide()
+        ctrl.addWidget(self._snapshot_btn)
 
         self._record_btn = QPushButton("RECORD OFF")
         self._record_btn.setObjectName("secondaryButton")
         self._record_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._record_btn.clicked.connect(self._toggle_recording)
         self._record_btn.setEnabled(False)
-        self._record_btn.hide()
+        ctrl.addWidget(self._record_btn)
 
         self._camera_combo = QComboBox()
         self._camera_combo.setObjectName("cameraCombo")
@@ -385,10 +389,11 @@ class DetectionPage(QWidget):
         self._log_panel = LogPanel()
 
         clear_btn = QPushButton("CLEAR LOG")
-        clear_btn.setObjectName("secondaryButton")
+        clear_btn.setObjectName("dangerButton")
         clear_btn.setFixedHeight(36)
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.clicked.connect(self._on_clear_log)
-        clear_btn.hide()
+        ctrl.addWidget(clear_btn)
 
         root.addLayout(ctrl)
         root.addSpacing(16)
@@ -649,9 +654,9 @@ class DetectionPage(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, result)
                 self._stream_table.setItem(row, column, item)
                 if row == 0:
-                    item.setBackground(Qt.GlobalColor.darkGreen)
+                    item.setBackground(QColor(34, 197, 94, 50))
                 elif result.watchlist_hit:
-                    item.setBackground(Qt.GlobalColor.darkRed)
+                    item.setBackground(QColor(239, 68, 68, 50))
 
     def _update_meta_cards(self):
         if self._active_camera is None:
@@ -671,23 +676,40 @@ class DetectionPage(QWidget):
             "Grid watch" if self._grid_mode > 1 else "Focused review"
         )
 
-    def _raise_alert_banner(self, result: PlateResult):
-        if result.watchlist_hit:
+    def _acknowledge_alerts(self):
+        self._alert_queue.clear()
+        self._update_alert_banner_ui()
+
+    def _update_alert_banner_ui(self, live_track_text: str = None):
+        if self._alert_queue:
             self._alert_banner.setProperty("state", "alert")
+            latest = self._alert_queue[-1]
+            count = len(self._alert_queue)
+            prefix = f"({count} UNREAD ALERTS) " if count > 1 else ""
             self._alert_banner.setText(
-                f"WATCHLIST ALERT | {result.text} on {result.source or f'CAM {result.camera_index}'} | confidence {result.confidence:.2f}"
+                f"🚨 {prefix}THREAT DETECTED: {latest.text} on {latest.source or f'CAM {latest.camera_index}'} | CLICK TO ACKNOWLEDGE"
             )
-            settings = load_ui_settings()
-            if bool(settings.get("sound_alerts_enabled", True)):
-                QApplication.beep()
         else:
-            self._alert_banner.setProperty("state", "tracking")
-            self._alert_banner.setText(
-                f"LIVE TRACK | {result.text} | {result.source or f'CAM {result.camera_index}'} | click stream rows to jump"
-            )
+            if live_track_text:
+                self._alert_banner.setProperty("state", "tracking")
+                self._alert_banner.setText(live_track_text)
+            else:
+                self._alert_banner.setProperty("state", "idle")
+                self._alert_banner.setText("NO ACTIVE ALERTS")
+
         self._alert_banner.style().unpolish(self._alert_banner)
         self._alert_banner.style().polish(self._alert_banner)
         self._alert_banner.update()
+
+    def _raise_alert_banner(self, result: PlateResult):
+        if result.watchlist_hit:
+            self._alert_queue.append(result)
+            settings = load_ui_settings()
+            if bool(settings.get("sound_alerts_enabled", True)):
+                QApplication.beep()
+            self._update_alert_banner_ui()
+        else:
+            self._update_alert_banner_ui(f"LIVE TRACK | {result.text} | {result.source or f'CAM {result.camera_index}'} | click stream rows to jump")
 
     def register_camera(self, index: int, label: str | None = None):
         if index in self._registered_cameras:
@@ -699,6 +721,7 @@ class DetectionPage(QWidget):
         self._source_labels[index] = label or f"CAM {index}"
         self._camera_status[index] = "Idle"
         self._start_btn.setEnabled(True)
+        self._start_btn.setToolTip("")
         self._snapshot_btn.setEnabled(True)
         self._record_btn.setEnabled(self._running)
         self._refresh_camera_selector()
@@ -733,7 +756,9 @@ class DetectionPage(QWidget):
                 if combo_idx >= 0:
                     self._camera_combo.setCurrentIndex(combo_idx)
             self._restore_selected_camera_state()
-        self._start_btn.setEnabled(len(self._registered_cameras) > 0)
+        enabled = len(self._registered_cameras) > 0
+        self._start_btn.setEnabled(enabled)
+        self._start_btn.setToolTip("" if enabled else "Configure cameras in Settings first")
         self._pause_btn.setEnabled(self._running and len(self._registered_cameras) > 0)
         self._snapshot_btn.setEnabled(len(self._registered_cameras) > 0)
         self._record_btn.setEnabled(self._running and len(self._registered_cameras) > 0)
@@ -840,12 +865,12 @@ class DetectionPage(QWidget):
         self._review_in_progress = False
         self._feed.clear_boxes()
         self._stop_recording()
-        self._alert_banner.setProperty("state", "idle")
-        self._alert_banner.setText("NO ACTIVE ALERTS")
+        self._acknowledge_alerts()
         self._start_btn.setText("START DETECTION")
         self._pause_btn.setEnabled(False)
         self._pause_btn.setText("PAUSE")
         self._record_btn.setEnabled(False)
+        self._record_btn.setText("RECORD OFF")
         self._refresh_camera_selector()
         self._update_status_text()
 
@@ -1026,7 +1051,8 @@ class DetectionPage(QWidget):
         self._recording = True
         self._record_camera = self._active_camera
         self._record_writer = writer
-        self._record_btn.setText("RECORD ON")
+        self._record_btn.setText("RECORDING ●")
+        self._record_btn.setStyleSheet("color: red; font-weight: bold;")
         self._camera_status[self._active_camera] = f"Recording to {filename}"
         self._update_status_text()
 
@@ -1037,6 +1063,7 @@ class DetectionPage(QWidget):
         self._record_camera = None
         self._recording = False
         self._record_btn.setText("RECORD OFF")
+        self._record_btn.setStyleSheet("")
 
     def _update_status_text(self):
         if len(self._registered_cameras) == 0:

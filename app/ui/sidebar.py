@@ -10,6 +10,7 @@ class Sidebar(QWidget):
         ("DASHBOARD", "dashboard"),
         ("DETECTION", "detection"),
         ("HISTORY", "history"),
+        ("WATCHLIST", "watchlist"),
     ]
 
     def __init__(self, parent=None):
@@ -30,7 +31,7 @@ class Sidebar(QWidget):
         layout.addWidget(title)
         self._title_label = title
 
-        subtitle = QLabel("OCR + YOLO")
+        subtitle = QLabel("ANPR COMMAND CENTER")
         subtitle.setObjectName("appSubtitle")
         layout.addWidget(subtitle)
         self._subtitle_label = subtitle
