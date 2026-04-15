@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import cv2
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
@@ -28,24 +30,36 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QSlider,
     QTabWidget,
+    QHeaderView,
 )
 
 from app.services.app_runtime import (
-    APP_LOG_PATH,
-    OUTPUTS_DIR,
-    PLATE_LOG_PATH,
-    SNAPSHOT_DIR,
-    SETTINGS_PATH,
-    WATCHLIST_PATH,
+    available_model_names,
     dashboard_stats,
     dependency_status,
+    get_app_log_path,
+    get_output_video_dir,
+    get_outputs_dir,
+    get_plate_log_runtime_path,
+    get_settings_path,
+    get_snapshot_dir,
+    get_watchlist_runtime_path,
+    grouped_plate_history,
+    load_case_flags,
     load_ui_settings,
     recent_detections,
     save_ui_settings,
+    save_case_flag,
+    save_watchlist_entries,
     search_plate_log,
+    watchlist_entries,
     clear_plate_log,
     clear_outputs,
+    delete_history_entries,
+    delete_snapshot_file,
 )
+from app.storage import load_storage_paths, save_storage_paths
+from app.storage.database import AVAILABLE_USER_ROLES
 
 
 def _page_header(title: str, subtitle: str) -> QVBoxLayout:
@@ -82,44 +96,149 @@ class DashboardPage(QWidget):
         super().__init__(parent)
         self.setObjectName("contentArea")
         self._value_labels: dict[str, QLabel] = {}
-        self._recent_table = None
-        self._preview = None
-        self._preview_details = None
+        self._trend_labels: dict[str, QLabel] = {}
         self._build_ui()
         self.refresh()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 28, 28, 24)
-        layout.setSpacing(16)
-        layout.addLayout(_page_header("Dashboard", "Live monitoring, camera readiness, and recent evidence"))
+        layout.setSpacing(14)
+        layout.addLayout(_page_header("Dashboard", "Live surveillance overview, evidence triage, and system health"))
 
         ticker = QFrame()
         ticker.setObjectName("tickerBar")
         ticker_row = QHBoxLayout(ticker)
-        ticker_row.setContentsMargins(16, 10, 16, 10)
+        ticker_row.setContentsMargins(16, 12, 16, 12)
         self._latest_label = QLabel("")
         self._latest_label.setObjectName("tickerLabel")
         ticker_row.addWidget(self._latest_label)
         ticker_row.addStretch()
         layout.addWidget(ticker)
 
-        row = QGridLayout()
-        row.setHorizontalSpacing(12)
-        row.setVerticalSpacing(12)
-        for key, label in (
-            ("detections", "DETECTIONS LOGGED"),
+        body = QHBoxLayout()
+        body.setSpacing(14)
+
+        left = QVBoxLayout()
+        left.setSpacing(14)
+
+        evidence_card = QFrame()
+        evidence_card.setObjectName("monitorPanel")
+        evidence_layout = QVBoxLayout(evidence_card)
+        evidence_layout.setContentsMargins(16, 16, 16, 16)
+        evidence_layout.setSpacing(10)
+        evidence_title = QLabel("LATEST DETECTION")
+        evidence_title.setObjectName("panelTitle")
+        evidence_layout.addWidget(evidence_title)
+
+        self._preview = QLabel("No recent evidence")
+        self._preview.setObjectName("dropZone")
+        self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview.setMinimumHeight(320)
+        evidence_layout.addWidget(self._preview)
+
+        evidence_meta = QGridLayout()
+        evidence_meta.setHorizontalSpacing(12)
+        evidence_meta.setVerticalSpacing(8)
+        self._hero_labels = {}
+        for idx, key in enumerate(("plate", "confidence", "timestamp", "source")):
+            key_label = QLabel(key.upper())
+            key_label.setObjectName("metricLabel")
+            val = QLabel("--")
+            val.setObjectName("metricValue")
+            val.setWordWrap(True)
+            self._hero_labels[key] = val
+            evidence_meta.addWidget(key_label, idx, 0)
+            evidence_meta.addWidget(val, idx, 1)
+        evidence_layout.addLayout(evidence_meta)
+        left.addWidget(evidence_card, stretch=3)
+
+        recent_card = QFrame()
+        recent_card.setObjectName("monitorPanel")
+        recent_layout = QVBoxLayout(recent_card)
+        recent_layout.setContentsMargins(14, 14, 14, 14)
+        recent_layout.setSpacing(8)
+        recent_title = QLabel("RECENT DETECTIONS")
+        recent_title.setObjectName("panelTitle")
+        recent_layout.addWidget(recent_title)
+        self._recent_table = QTableWidget(0, 4)
+        self._recent_table.setHorizontalHeaderLabels(["TIME", "PLATE", "CAM", "STATE"])
+        self._recent_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._recent_table.verticalHeader().setVisible(False)
+        self._recent_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._recent_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._recent_table.setMaximumHeight(220)
+        self._recent_table.itemSelectionChanged.connect(self._update_preview)
+        recent_layout.addWidget(self._recent_table)
+        left.addWidget(recent_card, stretch=2)
+
+        body.addLayout(left, stretch=3)
+
+        right = QVBoxLayout()
+        right.setSpacing(14)
+
+        metrics_card = QFrame()
+        metrics_card.setObjectName("monitorPanel")
+        metrics_layout = QGridLayout(metrics_card)
+        metrics_layout.setContentsMargins(14, 14, 14, 14)
+        metrics_layout.setHorizontalSpacing(10)
+        metrics_layout.setVerticalSpacing(10)
+        metric_items = (
+            ("detections", "DETECTIONS"),
             ("plates", "UNIQUE PLATES"),
             ("rate_per_min", "PLATES / MIN"),
             ("active_cameras", "ACTIVE CAMERAS"),
             ("avg_confidence", "AVG CONFIDENCE"),
             ("watchlist_hits", "WATCHLIST HITS"),
-        ):
+        )
+        for index, (key, label) in enumerate(metric_items):
             card, value_label = _stat_card_widget(label)
             self._value_labels[key] = value_label
-            index = len(self._value_labels) - 1
-            row.addWidget(card, index // 3, index % 3)
-        layout.addLayout(row)
+            metrics_layout.addWidget(card, index // 2, index % 2)
+        right.addWidget(metrics_card)
+
+        trend_card = QFrame()
+        trend_card.setObjectName("monitorPanel")
+        trend_layout = QVBoxLayout(trend_card)
+        trend_layout.setContentsMargins(14, 14, 14, 14)
+        trend_layout.setSpacing(8)
+        trend_title = QLabel("CAMERA STATUS + TRENDS")
+        trend_title.setObjectName("panelTitle")
+        trend_layout.addWidget(trend_title)
+        for key in ("delta", "sparkline", "camera_status", "watchlist"):
+            label = QLabel("--")
+            label.setObjectName("pageSubtitle")
+            label.setWordWrap(True)
+            self._trend_labels[key] = label
+            trend_layout.addWidget(label)
+        right.addWidget(trend_card)
+
+        self._system_box = QGroupBox("Collapsed System Telemetry")
+        self._system_box.setCheckable(True)
+        self._system_box.setChecked(False)
+        system_layout = QGridLayout(self._system_box)
+        self._system_labels = {}
+        for idx, (label, key) in enumerate(
+            [
+                ("Device", "device"),
+                ("Model", "model_path"),
+                ("GPU / Runtime", "torch"),
+                ("OCR", "paddle"),
+                ("Errors", "outputs"),
+            ]
+        ):
+            key_label = QLabel(label)
+            key_label.setObjectName("sectionLabel")
+            value = QLabel("--")
+            value.setObjectName("pageSubtitle")
+            value.setWordWrap(True)
+            self._system_labels[key] = value
+            system_layout.addWidget(key_label, idx, 0)
+            system_layout.addWidget(value, idx, 1)
+        right.addWidget(self._system_box)
+        right.addStretch()
+        body.addLayout(right, stretch=2)
+        layout.addLayout(body, stretch=1)
 
         actions = QHBoxLayout()
         for text, handler in (
@@ -134,52 +253,32 @@ class DashboardPage(QWidget):
         actions.addStretch()
         layout.addLayout(actions)
 
-        lower = QHBoxLayout()
-        lower.setSpacing(14)
-
-        self._recent_table = QTableWidget(0, 5)
-        self._recent_table.setHorizontalHeaderLabels(
-            ["TIME", "PLATE", "SOURCE", "CONF", "STATUS"]
-        )
-        self._recent_table.horizontalHeader().setStretchLastSection(True)
-        self._recent_table.verticalHeader().setVisible(False)
-        self._recent_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._recent_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._recent_table.itemSelectionChanged.connect(self._update_preview)
-        lower.addWidget(self._recent_table, stretch=3)
-
-        side = QVBoxLayout()
-        side.setSpacing(10)
-        side_card = QFrame()
-        side_card.setObjectName("monitorPanel")
-        side_card_layout = QVBoxLayout(side_card)
-        side_card_layout.setContentsMargins(14, 14, 14, 14)
-        side_card_layout.setSpacing(10)
-        title = QLabel("Latest Evidence")
-        title.setObjectName("panelTitle")
-        side_card_layout.addWidget(title)
-        self._preview = QLabel("No recent snapshot")
-        self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._preview.setMinimumSize(280, 200)
-        self._preview.setObjectName("dropZone")
-        side_card_layout.addWidget(self._preview)
-        self._preview_details = QLabel("Recent detections will appear here.")
-        self._preview_details.setObjectName("pageSubtitle")
-        self._preview_details.setWordWrap(True)
-        side_card_layout.addWidget(self._preview_details)
-        side.addWidget(side_card)
-        lower.addLayout(side, stretch=2)
-        layout.addLayout(lower, stretch=1)
-
     def refresh(self):
         stats = dashboard_stats()
         for key, label in self._value_labels.items():
             label.setText(stats.get(key, "0"))
         self._latest_label.setText(
-            f"LIVE ACTIVITY  |  Last detection: {stats['latest']}  |  "
+            f"LIVE ACTIVITY STRIP  |  Last detection {stats['latest']}  |  "
             f"{stats.get('active_cameras', '0')} configured cameras  |  "
-            f"{stats.get('rate_per_min', '0.0')} plates/min"
+            f"Trend {stats.get('trend_delta', '+0 plates/min')}  |  "
+            f"Sparkline {stats.get('sparkline', '0 0 0 0 0')}"
         )
+        self._trend_labels["delta"].setText(
+            f"Traffic trend: {stats.get('trend_delta', '+0 plates/min')}"
+        )
+        self._trend_labels["sparkline"].setText(
+            f"Last 5 min: {stats.get('sparkline', '0 0 0 0 0')}"
+        )
+        self._trend_labels["camera_status"].setText(
+            f"Camera readiness: {stats.get('active_cameras', '0')} configured | compact operator mode active"
+        )
+        self._trend_labels["watchlist"].setText(
+            f"Watchlist pressure: {stats.get('watchlist_hits', '0')} total hit(s)"
+        )
+
+        runtime = dependency_status()
+        for key, label in self._system_labels.items():
+            label.setText(str(runtime.get(key, "--")))
 
         matches = recent_detections(12)
         self._recent_table.setRowCount(len(matches))
@@ -189,19 +288,22 @@ class DashboardPage(QWidget):
                 match["timestamp"].split(" ")[-1],
                 match["plate"],
                 match["source"],
-                "" if match["confidence"] is None else f"{match['confidence']:.2f}",
                 status,
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, match)
                 self._recent_table.setItem(row_index, column, item)
+                if match["watchlist_hit"]:
+                    item.setBackground(Qt.GlobalColor.darkRed)
         if matches:
             self._recent_table.selectRow(0)
+            self._populate_latest_detection(matches[0])
         else:
             self._preview.setPixmap(QPixmap())
-            self._preview.setText("No recent snapshot")
-            self._preview_details.setText("Recent detections will appear here.")
+            self._preview.setText("No recent evidence")
+            for label in self._hero_labels.values():
+                label.setText("--")
 
     def _clear_log(self):
         clear_plate_log()
@@ -221,13 +323,16 @@ class DashboardPage(QWidget):
         match = self._selected_dashboard_match()
         if not match:
             return
+        self._populate_latest_detection(match)
+
+    def _populate_latest_detection(self, match: dict[str, object]):
         snapshot_path = Path(str(match.get("snapshot_path") or ""))
-        self._preview_details.setText(
-            f"Plate: {match['plate']}\n"
-            f"Source: {match['source']}\n"
-            f"Time: {match['timestamp']}\n"
-            f"Confidence: {match['confidence'] if match['confidence'] is not None else '--'}"
+        self._hero_labels["plate"].setText(str(match["plate"]))
+        self._hero_labels["confidence"].setText(
+            "--" if match["confidence"] is None else f"{float(match['confidence']):.2f}"
         )
+        self._hero_labels["timestamp"].setText(str(match["timestamp"]))
+        self._hero_labels["source"].setText(str(match["source"]))
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
             self._preview.setPixmap(
@@ -248,16 +353,17 @@ class HistoryPage(QWidget):
         super().__init__(parent)
         self.setObjectName("contentArea")
         self._all_matches: list[dict[str, object]] = []
+        self._grouped_matches: list[dict[str, object]] = []
         self._build_ui()
         self.refresh()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 28, 28, 24)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
         layout.addLayout(
             _page_header(
-                "History", "Investigation view for detections, repeat sightings, and evidence"
+                "History", "Investigation workflow grouped by plate, with timeline review and case notes"
             )
         )
 
@@ -312,11 +418,11 @@ class HistoryPage(QWidget):
         splitter_row = QHBoxLayout()
         splitter_row.setSpacing(14)
 
-        self._table = QTableWidget(0, 5)
+        self._table = QTableWidget(0, 6)
         self._table.setHorizontalHeaderLabels(
-            ["Timestamp", "Plate", "Source", "Confidence", "Watchlist"]
+            ["PLATE", "SEEN", "FIRST", "LAST", "CONF", "FLAG"]
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -324,7 +430,7 @@ class HistoryPage(QWidget):
         splitter_row.addWidget(self._table, stretch=3)
 
         side = QVBoxLayout()
-        self._preview = QLabel("No snapshot selected")
+        self._preview = QLabel("No plate selected")
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumSize(280, 220)
         self._preview.setObjectName("dropZone")
@@ -335,9 +441,31 @@ class HistoryPage(QWidget):
         self._details.setObjectName("pageSubtitle")
         side.addWidget(self._details)
 
+        self._sequence_table = QTableWidget(0, 4)
+        self._sequence_table.setHorizontalHeaderLabels(["TIME", "SOURCE", "CONF", "STATE"])
+        self._sequence_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._sequence_table.verticalHeader().setVisible(False)
+        self._sequence_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._sequence_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._sequence_table.itemSelectionChanged.connect(self._update_sequence_preview)
+        side.addWidget(self._sequence_table)
+
+        self._notes = QTextEdit()
+        self._notes.setPlaceholderText("Operator notes for this plate...")
+        self._notes.setFixedHeight(90)
+        side.addWidget(self._notes)
+
+        self._flag_btn = QPushButton("FLAG / UNFLAG PLATE")
+        self._flag_btn.setObjectName("secondaryButton")
+        self._flag_btn.clicked.connect(self._toggle_flag)
+        side.addWidget(self._flag_btn)
+
         for text, handler in (
             ("OPEN SNAPSHOT", self._open_selected_snapshot),
-            ("PLAY SEQUENCE", self._show_sequence_summary),
+            ("DELETE SNAPSHOT", self._delete_selected_snapshot),
+            ("DELETE HISTORY", self._delete_selected_history),
+            ("EXPORT CASE BUNDLE", self._show_sequence_summary),
+            ("ADD TO WATCHLIST", self._add_selected_to_watchlist),
         ):
             btn = QPushButton(text)
             btn.setObjectName("secondaryButton")
@@ -363,29 +491,35 @@ class HistoryPage(QWidget):
             if self._confidence_match(match.get("confidence"))
         ]
         self._all_matches = matches
-        self._table.setRowCount(len(matches))
-        for row_index, match in enumerate(matches):
+        groups = grouped_plate_history(matches)
+        self._grouped_matches = groups
+        self._table.setRowCount(len(groups))
+        for row_index, group in enumerate(groups):
             values = [
-                match["timestamp"],
-                match["plate"],
-                match["source"],
-                "" if match["confidence"] is None else f"{match['confidence']:.4f}",
-                "WATCHLIST" if match["watchlist_hit"] else "Clear",
+                group["plate"],
+                str(group["count"]),
+                str(group["first_seen"]).split(" ")[-1],
+                str(group["last_seen"]).split(" ")[-1],
+                "--" if group["avg_confidence"] is None else f"{float(group['avg_confidence']):.2f}",
+                "FLAGGED" if group["flagged"] else "OPEN",
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                item.setData(Qt.ItemDataRole.UserRole, match)
+                item.setData(Qt.ItemDataRole.UserRole, group)
                 self._table.setItem(row_index, column, item)
-                if match["watchlist_hit"]:
+                if group["watchlist_hit"]:
                     item.setBackground(Qt.GlobalColor.darkRed)
-                elif match["confidence"] is not None and float(match["confidence"]) < 0.75:
+                elif group["flagged"]:
                     item.setBackground(Qt.GlobalColor.darkYellow)
-        if matches:
+                elif group["avg_confidence"] is not None and float(group["avg_confidence"]) < 0.75:
+                    item.setBackground(Qt.GlobalColor.darkYellow)
+        if groups:
             self._table.selectRow(0)
         else:
-            self._preview.setText("No snapshot selected")
+            self._preview.setText("No plate selected")
             self._preview.setPixmap(QPixmap())
             self._details.setText("No matching detections.")
+            self._sequence_table.setRowCount(0)
             self._update_summary(None)
 
     def _selected_match(self) -> dict[str, object] | None:
@@ -398,19 +532,35 @@ class HistoryPage(QWidget):
         match = self._selected_match()
         if not match:
             return
-        related = [entry for entry in self._all_matches if entry["plate"] == match["plate"]]
+        related = list(match["matches"])
         confidences = [entry["confidence"] for entry in related if entry["confidence"] is not None]
         avg_conf = f"{(sum(confidences) / len(confidences)):.2f}" if confidences else "--"
-        snapshot_path = Path(str(match.get("snapshot_path") or ""))
+        latest = related[-1] if related else None
+        snapshot_path = Path(str(latest.get("snapshot_path") or "")) if latest else Path()
         self._details.setText(
             f"Plate: {match['plate']}\n"
-            f"Source: {match['source']}\n"
-            f"Time: {match['timestamp']}\n"
-            f"Snapshot: {snapshot_path if snapshot_path else 'None'}\n"
             f"Sightings: {len(related)}\n"
-            f"Average confidence: {avg_conf}"
+            f"First seen: {match['first_seen']}\n"
+            f"Last seen: {match['last_seen']}\n"
+            f"Average confidence: {avg_conf}\n"
+            f"Sources: {', '.join(match['sources'])}\n"
+            f"Watchlist hit: {'Yes' if match['watchlist_hit'] else 'No'}"
         )
         self._update_summary(match["plate"])
+        self._notes.setPlainText(str(match.get("note", "")))
+        self._flag_btn.setText("UNFLAG PLATE" if match["flagged"] else "FLAG PLATE")
+        self._sequence_table.setRowCount(len(related))
+        for row_index, entry in enumerate(reversed(related[-20:])):
+            values = [
+                str(entry["timestamp"]).split(" ")[-1],
+                str(entry["source"]),
+                "--" if entry["confidence"] is None else f"{float(entry['confidence']):.2f}",
+                "WATCHLIST" if entry["watchlist_hit"] else "CLEAR",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, entry)
+                self._sequence_table.setItem(row_index, column, item)
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
             self._preview.setPixmap(
@@ -426,16 +576,59 @@ class HistoryPage(QWidget):
             self._preview.setText("Snapshot unavailable")
 
     def _open_selected_snapshot(self):
-        match = self._selected_match()
-        if not match:
+        entry = self._selected_sequence_entry()
+        if not entry:
             return
-        snapshot_path = Path(str(match.get("snapshot_path") or ""))
+        snapshot_path = Path(str(entry.get("snapshot_path") or ""))
         if snapshot_path.exists():
-            from PyQt6.QtWidgets import QMessageBox
-
             QMessageBox.information(
                 self, "Snapshot", f"Snapshot saved at:\n{snapshot_path}"
             )
+
+    def _delete_selected_snapshot(self):
+        entry = self._selected_sequence_entry()
+        if not entry:
+            return
+        snapshot_path = str(entry.get("snapshot_path") or "")
+        if not snapshot_path:
+            QMessageBox.warning(self, "Delete Snapshot", "No snapshot is linked to this history entry.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Snapshot",
+            f"Delete snapshot file?\n{snapshot_path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if delete_snapshot_file(snapshot_path):
+            QMessageBox.information(self, "Delete Snapshot", "Snapshot deleted.")
+        else:
+            QMessageBox.warning(self, "Delete Snapshot", "Snapshot file could not be deleted.")
+        self.refresh()
+
+    def _delete_selected_history(self):
+        entry = self._selected_sequence_entry()
+        if not entry:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete History",
+            f"Delete selected history entry for {entry['plate']} at {entry['timestamp']}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        entries_to_delete = [entry]
+        deleted = delete_history_entries(entries_to_delete)
+        for item in entries_to_delete:
+            delete_snapshot_file(item.get("snapshot_path"))
+        QMessageBox.information(
+            self,
+            "Delete History",
+            f"Deleted {deleted} history entr{'y' if deleted == 1 else 'ies'}.",
+        )
+        self.refresh()
 
     def _resolve_time_window(self) -> tuple[str, str]:
         preset = self._time_preset.currentText()
@@ -470,6 +663,39 @@ class HistoryPage(QWidget):
         self._last_seen[1].setText(last_seen.split(" ")[-1] if last_seen != "--" else "--")
         self._avg_conf[1].setText(f"{(sum(confidences) / len(confidences)) * 100:.0f}%" if confidences else "--")
 
+    def _selected_sequence_entry(self) -> dict[str, object] | None:
+        items = self._sequence_table.selectedItems()
+        if not items:
+            match = self._selected_match()
+            if match and match["matches"]:
+                return match["matches"][-1]
+            return None
+        return items[0].data(Qt.ItemDataRole.UserRole)
+
+    def _update_sequence_preview(self):
+        entry = self._selected_sequence_entry()
+        if not entry:
+            return
+        snapshot_path = Path(str(entry.get("snapshot_path") or ""))
+        if snapshot_path.exists():
+            pixmap = QPixmap(str(snapshot_path))
+            self._preview.setPixmap(
+                pixmap.scaled(
+                    self._preview.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self._preview.setText("")
+
+    def _toggle_flag(self):
+        match = self._selected_match()
+        if not match:
+            return
+        flagged = not bool(match["flagged"])
+        save_case_flag(str(match["plate"]), flagged, self._notes.toPlainText())
+        self.refresh()
+
     def _show_sequence_summary(self):
         match = self._selected_match()
         if not match:
@@ -479,13 +705,23 @@ class HistoryPage(QWidget):
             return
         QMessageBox.information(
             self,
-            "Sequence",
+            "Case Bundle",
             "\n".join(
                 f"{entry['timestamp']} | {entry['source']} | "
                 f"{entry['confidence'] if entry['confidence'] is not None else '--'}"
                 for entry in related[:20]
             ),
         )
+
+    def _add_selected_to_watchlist(self):
+        match = self._selected_match()
+        if not match:
+            return
+        entries = watchlist_entries()
+        if match["plate"] not in entries:
+            entries.append(str(match["plate"]))
+            save_watchlist_entries(entries)
+        QMessageBox.information(self, "Watchlist", f"{match['plate']} added to watchlist")
 
 
 class SettingsPage(QWidget):
@@ -500,12 +736,17 @@ class SettingsPage(QWidget):
         self._frame_skip = None
         self._save_snapshots = None
         self._watchlist_alerts = None
+        self._sound_alerts = None
         self._camera_indices = None
         self._ip_camera_urls = None
         self._default_camera = None
         self._auto_start_cameras = None
         self._scan_cameras_btn = None
+        self._test_camera_btn = None
         self._camera_status_label = None
+        self._camera_preview = None
+        self._camera_validation = None
+        self._model_selector = None
         self._theme_combo = None
         self._path_edits = {}
         self._build_ui()
@@ -520,7 +761,7 @@ class SettingsPage(QWidget):
         header.setSpacing(4)
         title = QLabel("Settings")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Configure detection, cameras, storage, alerts, and appearance")
+        subtitle = QLabel("System control for cameras, detection runtime, storage, and alerts")
         subtitle.setObjectName("pageSubtitle")
         header.addWidget(title)
         header.addWidget(subtitle)
@@ -549,7 +790,7 @@ class SettingsPage(QWidget):
         cameras_tab = self._tab_page()
         cameras_tab.layout().addWidget(
             self._create_card(
-                "Camera Configuration",
+                "Camera Command",
                 [
                     ("Scan Cameras", self._create_scan_section()),
                     ("Camera Indices", self._create_line_edit("e.g., 0,1,2", "camera_indices")),
@@ -558,6 +799,8 @@ class SettingsPage(QWidget):
                         "ip_camera_urls",
                     )),
                     ("Default Camera", self._create_spin_box(-1, 10, "default_camera", "None")),
+                    ("Validation", self._create_validation_label()),
+                    ("Live Preview", self._create_camera_preview()),
                 ],
             )
         )
@@ -570,7 +813,8 @@ class SettingsPage(QWidget):
                 "Detection",
                 [
                     ("Confidence Threshold", self._create_confidence_slider()),
-                    ("Frame Skip", self._create_spin_box(1, 10, "frame_skip")),
+                    ("Frame Skip", self._create_frame_skip_slider()),
+                    ("Model Selector", self._create_model_selector()),
                 ],
             )
         )
@@ -586,10 +830,11 @@ class SettingsPage(QWidget):
                         "Save confirmed snapshots automatically",
                         "save_snapshots",
                     )),
-                    ("Settings", self._create_editable_path_display("Settings", SETTINGS_PATH)),
-                    ("Watchlist", self._create_editable_path_display("Watchlist", WATCHLIST_PATH)),
-                    ("Plate Log", self._create_editable_path_display("Plate Log", PLATE_LOG_PATH)),
-                    ("Snapshots", self._create_editable_path_display("Snapshots", SNAPSHOT_DIR)),
+                    ("Settings", self._create_editable_path_display("Settings", get_settings_path())),
+                    ("Watchlist", self._create_editable_path_display("Watchlist", get_watchlist_runtime_path())),
+                    ("Plate Log", self._create_editable_path_display("Plate Log", get_plate_log_runtime_path())),
+                    ("Snapshots", self._create_editable_path_display("Snapshots", get_snapshot_dir())),
+                    ("Videos", self._create_editable_path_display("Videos", get_output_video_dir())),
                 ],
             )
         )
@@ -600,10 +845,16 @@ class SettingsPage(QWidget):
         alerts_tab.layout().addWidget(
             self._create_card(
                 "Alerts",
-                [("Watchlist Alerts", self._create_checkbox(
-                    "Enable alerts for watchlist hits",
-                    "watchlist_alerts",
-                ))],
+                [
+                    ("Watchlist Alerts", self._create_checkbox(
+                        "Enable alerts for watchlist hits",
+                        "watchlist_alerts",
+                    )),
+                    ("Sound Alert", self._create_checkbox(
+                        "Play sound when a watchlist plate is detected",
+                        "sound_alerts",
+                    )),
+                ],
             )
         )
         alerts_tab.layout().addStretch()
@@ -650,6 +901,8 @@ class SettingsPage(QWidget):
     def _create_line_edit(self, placeholder: str, attr_name: str) -> QLineEdit:
         edit = QLineEdit()
         edit.setPlaceholderText(placeholder)
+        if attr_name == "camera_indices":
+            edit.textChanged.connect(self._validate_camera_sources)
         setattr(self, f"_{attr_name}", edit)
         return edit
 
@@ -706,6 +959,24 @@ class SettingsPage(QWidget):
         self._confidence_label = value
         return widget
 
+    def _create_frame_skip_slider(self) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(1, 10)
+        value = QLabel("5")
+        value.setObjectName("pageSubtitle")
+        slider.valueChanged.connect(lambda current: value.setText(str(current)))
+        layout.addWidget(slider, 1)
+        layout.addWidget(value)
+
+        self._frame_skip = slider
+        self._frame_skip_label = value
+        return widget
+
     def _tab_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -727,6 +998,16 @@ class SettingsPage(QWidget):
 
         return widget
 
+    def _create_model_selector(self) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._model_selector = QComboBox()
+        self._model_selector.addItems(available_model_names())
+        layout.addWidget(self._model_selector)
+        layout.addStretch()
+        return widget
+
     def _create_scan_section(self) -> QWidget:
         widget = QWidget()
         container = QHBoxLayout(widget)
@@ -738,6 +1019,12 @@ class SettingsPage(QWidget):
         self._scan_cameras_btn.clicked.connect(self.scan_cameras)
         container.addWidget(self._scan_cameras_btn)
 
+        self._test_camera_btn = QPushButton("TEST CONNECTION")
+        self._test_camera_btn.setObjectName("secondaryButton")
+        self._test_camera_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._test_camera_btn.clicked.connect(self._test_camera_connection)
+        container.addWidget(self._test_camera_btn)
+
         self._camera_status_label = QLabel(
             "Saved sources load automatically. Scan only to discover local cameras."
         )
@@ -747,6 +1034,19 @@ class SettingsPage(QWidget):
 
         return widget
 
+    def _create_validation_label(self) -> QLabel:
+        self._camera_validation = QLabel("Waiting for camera input.")
+        self._camera_validation.setObjectName("validationLabel")
+        self._camera_validation.setWordWrap(True)
+        return self._camera_validation
+
+    def _create_camera_preview(self) -> QLabel:
+        self._camera_preview = QLabel("No preview yet")
+        self._camera_preview.setObjectName("dropZone")
+        self._camera_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._camera_preview.setMinimumHeight(220)
+        return self._camera_preview
+
     def _create_editable_path_display(self, path_name: str, path: Path) -> QWidget:
         """Create an editable path display with a browse button."""
         widget = QWidget()
@@ -755,7 +1055,6 @@ class SettingsPage(QWidget):
         layout.setSpacing(8)
 
         edit = QLineEdit(str(path))
-        edit.setReadOnly(True)
         edit.setObjectName("pathDisplay")
         self._path_edits[path_name] = edit
         layout.addWidget(edit)
@@ -774,37 +1073,69 @@ class SettingsPage(QWidget):
     def _browse_for_path(self, path_name: str, edit: QLineEdit):
         """Open file dialog to browse for a path."""
         current_path = edit.text()
-        selected_path = QFileDialog.getExistingDirectory(
-            self,
-            f"Select {path_name} Directory",
-            current_path if current_path else str(Path.home()),
-            QFileDialog.Option.ShowDirsOnly
-        )
+        if path_name in {"Snapshots", "Videos"}:
+            selected_path = QFileDialog.getExistingDirectory(
+                self,
+                f"Select {path_name} Directory",
+                current_path if current_path else str(Path.home()),
+                QFileDialog.Option.ShowDirsOnly,
+            )
+        else:
+            selected_path, _ = QFileDialog.getSaveFileName(
+                self,
+                f"Select {path_name} File",
+                current_path if current_path else str(Path.home()),
+                "All Files (*)",
+            )
         if selected_path:
             edit.setText(selected_path)
 
     def _validate_camera_sources(self):
         raw = self._ip_camera_urls.toPlainText().strip()
+        indices = self._camera_indices.text().strip()
         if not raw:
             self._camera_status_label.setText(
                 "Saved sources load automatically. Scan only to discover local cameras."
             )
-            return
-        invalid = [
+        invalid_index = any(
+            not part.strip().isdigit()
+            for part in indices.replace("\n", ",").split(",")
+            if part.strip()
+        )
+        invalid_urls = [
             line.strip()
             for line in raw.splitlines()
             if line.strip()
             and not line.strip().lower().startswith(("rtsp://", "http://", "https://"))
         ]
-        if invalid:
+        if invalid_index:
+            self._camera_validation.setText("Camera indices must contain only numbers separated by commas.")
+            self._camera_indices.setProperty("invalid", True)
+        elif invalid_urls:
             self._camera_status_label.setText(
-                f"Invalid stream URL: {invalid[0]}"
+                f"Invalid stream URL: {invalid_urls[0]}"
             )
+            self._camera_validation.setText(f"Invalid stream URL: {invalid_urls[0]}")
+            self._ip_camera_urls.setProperty("invalid", True)
         else:
             self._camera_status_label.setText("Camera sources look valid.")
+            self._camera_validation.setText(
+                "Connection inputs look valid. Use TEST CONNECTION for live verification."
+            )
+            self._ip_camera_urls.setProperty("invalid", False)
+            self._camera_indices.setProperty("invalid", False)
+        if not invalid_index:
+            self._camera_indices.setProperty("invalid", False)
+        if not invalid_urls:
+            self._ip_camera_urls.setProperty("invalid", False)
+        self._ip_camera_urls.style().unpolish(self._ip_camera_urls)
+        self._ip_camera_urls.style().polish(self._ip_camera_urls)
+        self._camera_indices.style().unpolish(self._camera_indices)
+        self._camera_indices.style().polish(self._camera_indices)
 
     def _load(self):
         settings = load_ui_settings()
+        storage_paths = load_storage_paths()
         
         # Load theme preference
         theme = settings.get("theme", "dark").lower()
@@ -820,6 +1151,7 @@ class SettingsPage(QWidget):
         self._watchlist_alerts.setChecked(
             bool(settings.get("watchlist_alerts_enabled", True))
         )
+        self._sound_alerts.setChecked(bool(settings.get("sound_alerts_enabled", True)))
 
         indices = settings.get("camera_indices", "")
         self._camera_indices.setText(indices)
@@ -828,9 +1160,32 @@ class SettingsPage(QWidget):
         self._auto_start_cameras.setChecked(
             bool(settings.get("auto_start_cameras", False))
         )
+        model_name = str(settings.get("model_name", "LicensePlateDetector.pt"))
+        current_index = self._model_selector.findText(model_name)
+        if current_index >= 0:
+            self._model_selector.setCurrentIndex(current_index)
+        self._path_edits["Settings"].setText(str(get_settings_path()))
+        self._path_edits["Watchlist"].setText(storage_paths["watchlist_path"])
+        self._path_edits["Plate Log"].setText(str(get_plate_log_runtime_path()))
+        self._path_edits["Snapshots"].setText(storage_paths["snapshots_dir"])
+        self._path_edits["Videos"].setText(storage_paths["videos_dir"])
+        self._validate_camera_sources()
 
     def _save(self):
         theme_text = self._theme_combo.currentText().lower()
+        self._validate_camera_sources()
+        new_storage_paths = {
+            "logs_dir": str(Path(self._path_edits["Plate Log"].text().strip()).parent),
+            "settings_path": self._path_edits["Settings"].text().strip(),
+            "plate_log_path": self._path_edits["Plate Log"].text().strip(),
+            "watchlist_path": self._path_edits["Watchlist"].text().strip(),
+            "snapshots_dir": self._path_edits["Snapshots"].text().strip(),
+            "videos_dir": self._path_edits["Videos"].text().strip(),
+        }
+        settings_parent = Path(self._path_edits["Settings"].text().strip()).parent
+        if settings_parent:
+            new_storage_paths["logs_dir"] = str(settings_parent)
+        save_storage_paths(new_storage_paths)
         
         settings = save_ui_settings(
             {
@@ -838,10 +1193,12 @@ class SettingsPage(QWidget):
                 "frame_skip": int(self._frame_skip.value()),
                 "save_snapshots": bool(self._save_snapshots.isChecked()),
                 "watchlist_alerts_enabled": bool(self._watchlist_alerts.isChecked()),
+                "sound_alerts_enabled": bool(self._sound_alerts.isChecked()),
                 "camera_indices": self._camera_indices.text().strip(),
                 "ip_camera_urls": self._ip_camera_urls.toPlainText().strip(),
                 "default_camera": int(self._default_camera.value()),
                 "auto_start_cameras": bool(self._auto_start_cameras.isChecked()),
+                "model_name": self._model_selector.currentText(),
                 "theme": theme_text,
             }
         )
@@ -849,6 +1206,7 @@ class SettingsPage(QWidget):
         self.settings_changed.emit(settings)
         self.camera_config_changed.emit(settings)
         self.theme_changed.emit(theme_text)
+        self._load()
 
     def scan_cameras(self):
         import sys
@@ -868,8 +1226,47 @@ class SettingsPage(QWidget):
         if found:
             self._camera_status_label.setText(f"Found: {found}")
             self._camera_indices.setText(",".join(map(str, found)))
+            self._camera_validation.setText("Local camera scan completed successfully.")
         else:
             self._camera_status_label.setText("No cameras found")
+            self._camera_validation.setText("No local cameras responded during scan.")
+
+    def _test_camera_connection(self):
+        source: int | str | None = None
+        raw_indices = [part.strip() for part in self._camera_indices.text().replace("\n", ",").split(",") if part.strip()]
+        if raw_indices and raw_indices[0].isdigit():
+            source = int(raw_indices[0])
+        else:
+            urls = [line.strip() for line in self._ip_camera_urls.toPlainText().splitlines() if line.strip()]
+            if urls:
+                source = urls[0]
+        if source is None:
+            self._camera_validation.setText("Enter a camera index or stream URL before testing.")
+            return
+        cap = cv2.VideoCapture(source)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            self._camera_status_label.setText("Connection test failed.")
+            self._camera_validation.setText("Unable to read a frame from the selected source.")
+            self._camera_preview.setPixmap(QPixmap())
+            self._camera_preview.setText("Preview unavailable")
+            return
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        from PyQt6.QtGui import QImage
+
+        image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        self._camera_preview.setPixmap(
+            QPixmap.fromImage(image).scaled(
+                self._camera_preview.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        self._camera_preview.setText("")
+        self._camera_status_label.setText("Connection test passed.")
+        self._camera_validation.setText("Live preview captured successfully.")
 
 
 
@@ -887,25 +1284,34 @@ class AboutPage(QWidget):
         layout.addLayout(
             _page_header(
                 "System Info",
-                "Device status, model information, and runtime diagnostics",
+                "Runtime telemetry has been moved into the Dashboard so operators stay in one workspace",
             )
         )
 
-        info_box = QGroupBox("Runtime Information")
-        info_layout = QGridLayout(info_box)
-        info_layout.setSpacing(12)
+        notice = QFrame()
+        notice.setObjectName("monitorPanel")
+        notice_layout = QVBoxLayout(notice)
+        notice_layout.setContentsMargins(20, 20, 20, 20)
+        notice_layout.setSpacing(10)
+        title = QLabel("SYSTEM INFO MOVED")
+        title.setObjectName("panelTitle")
+        body = QLabel(
+            "Open Dashboard to view device state, model runtime, storage paths, and condensed diagnostics without leaving surveillance mode."
+        )
+        body.setObjectName("pageSubtitle")
+        body.setWordWrap(True)
+        notice_layout.addWidget(title)
+        notice_layout.addWidget(body)
+        layout.addWidget(notice)
 
         self._info_labels = {}
+        info_box = QGroupBox("Reference Diagnostics")
+        info_layout = QGridLayout(info_box)
+        info_layout.setSpacing(12)
         info_items = [
             ("device_label", "Processing Device"),
             ("model_path_label", "Model Path"),
             ("model_exists_label", "Model Status"),
-            ("torch_label", "PyTorch Version"),
-            ("opencv_label", "OpenCV"),
-            ("awiros_anpr_label", "Awiros ANPR OCR"),
-            ("paddle_label", "PaddlePaddle"),
-            ("safetensors_label", "SafeTensors"),
-            ("ultralytics_label", "Ultralytics"),
             ("plate_log_label", "Plate Log"),
             ("watchlist_label", "Watchlist"),
             ("outputs_label", "Outputs Directory"),
@@ -974,9 +1380,9 @@ class UserManagementPage(QWidget):
         )
 
         self._user_table = QTableWidget()
-        self._user_table.setColumnCount(5)
+        self._user_table.setColumnCount(6)
         self._user_table.setHorizontalHeaderLabels(
-            ["ID", "Username", "Role", "Created At", "Last Login"]
+            ["ID", "Username", "Full Name", "Role", "Created At", "Last Login"]
         )
         self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -987,14 +1393,17 @@ class UserManagementPage(QWidget):
 
         self._new_username = QLineEdit()
         self._new_username.setPlaceholderText("Username")
+        self._new_full_name = QLineEdit()
+        self._new_full_name.setPlaceholderText("Full Name")
         self._new_password = QLineEdit()
         self._new_password.setPlaceholderText("Password")
         self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_role = QLineEdit()
-        self._new_role.setPlaceholderText("Role (user/admin)")
-        self._new_role.setText("user")
+        self._new_role = QComboBox()
+        self._new_role.addItems(AVAILABLE_USER_ROLES)
+        self._new_role.setCurrentText("gate keeper")
 
         form_layout.addRow("Username:", self._new_username)
+        form_layout.addRow("Full Name:", self._new_full_name)
         form_layout.addRow("Password:", self._new_password)
         form_layout.addRow("Role:", self._new_role)
 
@@ -1024,10 +1433,11 @@ class UserManagementPage(QWidget):
             self._user_table.insertRow(row)
             self._user_table.setItem(row, 0, QTableWidgetItem(str(user.id)))
             self._user_table.setItem(row, 1, QTableWidgetItem(user.username))
-            self._user_table.setItem(row, 2, QTableWidgetItem(user.role))
+            self._user_table.setItem(row, 2, QTableWidgetItem(getattr(user, "full_name", "") or user.username))
+            self._user_table.setItem(row, 3, QTableWidgetItem(user.role))
             self._user_table.setItem(
                 row,
-                3,
+                4,
                 QTableWidgetItem(
                     user.created_at.strftime("%Y-%m-%d %H:%M")
                     if user.created_at
@@ -1036,7 +1446,7 @@ class UserManagementPage(QWidget):
             )
             self._user_table.setItem(
                 row,
-                4,
+                5,
                 QTableWidgetItem(
                     user.last_login.strftime("%Y-%m-%d %H:%M")
                     if user.last_login
@@ -1048,25 +1458,27 @@ class UserManagementPage(QWidget):
         from app.storage.database import create_user
 
         username = self._new_username.text().strip()
+        full_name = self._new_full_name.text().strip()
         password = self._new_password.text()
-        role = self._new_role.text().strip().lower()
+        role = self._new_role.currentText().strip().lower()
 
-        if not username or not password:
-            QMessageBox.warning(self, "Error", "Username and password are required")
+        if not username or not full_name or not password:
+            QMessageBox.warning(self, "Error", "Username, full name and password are required")
             return
 
-        if role not in ("user", "admin"):
-            QMessageBox.warning(self, "Error", "Role must be 'user' or 'admin'")
+        if role not in AVAILABLE_USER_ROLES:
+            QMessageBox.warning(self, "Error", "Select a valid role")
             return
 
-        user = create_user(username, password, role)
+        user = create_user(username, password, role, full_name=full_name)
         if user:
             QMessageBox.information(
                 self, "Success", f"User '{username}' created successfully"
             )
             self._new_username.clear()
+            self._new_full_name.clear()
             self._new_password.clear()
-            self._new_role.setText("user")
+            self._new_role.setCurrentText("gate keeper")
             self._refresh_users()
         else:
             QMessageBox.warning(

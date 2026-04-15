@@ -42,12 +42,6 @@ OCR_MODEL_DIR = get_awiros_model_dir()
 OCR_DICT_PATH = get_awiros_dict_path()
 OCR_CONFIG_PATH = OCR_MODEL_DIR / "inference.yml"
 OCR_WEIGHTS_PATH = OCR_MODEL_DIR / "model.safetensors"
-OUTPUTS_DIR = get_snapshots_dir()
-OUTPUT_LOG_DIR = get_logs_dir()
-SNAPSHOT_DIR = get_snapshots_dir()
-WATCHLIST_PATH = get_watchlist_path()
-PLATE_LOG_PATH = get_plate_log_path()
-
 LEGACY_LICENSE_PLATE_MODEL_PATH = get_model_path("LicensePlateDetector.pt")
 
 PLATE_REGEX = r"^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]{6,10}$"
@@ -132,6 +126,15 @@ def validate_detection_runtime() -> None:
 
 
 def resolve_plate_model_path() -> Path:
+    from app.services.app_runtime import load_ui_settings
+
+    settings = load_ui_settings()
+    configured_name = str(settings.get("model_name", "LicensePlateDetector.pt")).strip()
+    if configured_name:
+        configured_path = get_model_path(configured_name)
+        if configured_path.exists():
+            return configured_path
+
     if LEGACY_LICENSE_PLATE_MODEL_PATH.exists():
         return LEGACY_LICENSE_PLATE_MODEL_PATH
 
@@ -706,7 +709,7 @@ def safe_stem(value: str) -> str:
 def next_snapshot_path(plate_number: str, source: str, timestamp: datetime | None = None) -> Path:
     ensure_runtime_dirs()
     stamp = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    return SNAPSHOT_DIR / f"{safe_stem(source)}_{safe_stem(plate_number)}_{stamp}.png"
+    return get_snapshots_dir() / f"{safe_stem(source)}_{safe_stem(plate_number)}_{stamp}.png"
 
 
 def save_plate_snapshot(plate_region, snapshot_path: Path) -> Path | None:
@@ -720,8 +723,9 @@ def save_plate_snapshot(plate_region, snapshot_path: Path) -> Path | None:
 def load_watchlist() -> set[str]:
     global _watchlist_cache, _watchlist_mtime
     ensure_runtime_dirs()
+    watchlist_path = get_watchlist_path()
     try:
-        current_mtime = WATCHLIST_PATH.stat().st_mtime
+        current_mtime = watchlist_path.stat().st_mtime
     except OSError:
         return set()
     if current_mtime == _watchlist_mtime:
@@ -729,7 +733,7 @@ def load_watchlist() -> set[str]:
     _watchlist_mtime = current_mtime
     _watchlist_cache = {
         line.strip().upper()
-        for line in WATCHLIST_PATH.read_text(encoding="utf-8").splitlines()
+        for line in watchlist_path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
     return _watchlist_cache
@@ -750,7 +754,7 @@ def append_plate_log(
 ) -> None:
     ensure_runtime_dirs()
     now = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-    with open(PLATE_LOG_PATH, mode="a", newline="", encoding="utf-8") as file:
+    with open(get_plate_log_path(), mode="a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(
             [
                 now,

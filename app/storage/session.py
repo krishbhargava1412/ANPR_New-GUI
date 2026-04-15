@@ -12,6 +12,7 @@ _current_user: Optional[dict] = None
 class Session:
     user_id: int
     username: str
+    full_name: str
     role: str
     admin_id: Optional[int] = None
     is_authenticated: bool = True
@@ -26,6 +27,7 @@ def login(username: str, password: str) -> Optional[Session]:
         return Session(
             user_id=user["id"],
             username=user["username"],
+            full_name=user.get("full_name", user["username"]),
             role=user["role"],
             admin_id=admin_id,
         )
@@ -48,6 +50,7 @@ def get_current_session() -> Optional[Session]:
     return Session(
         user_id=_current_user["id"],
         username=_current_user["username"],
+        full_name=_current_user.get("full_name", _current_user["username"]),
         role=_current_user["role"],
         admin_id=admin_id,
     )

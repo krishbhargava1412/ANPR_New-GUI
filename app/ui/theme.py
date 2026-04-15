@@ -134,6 +134,36 @@ QLabel#appSubtitle {{
     font-weight: 400;
 }}
 
+QFrame#sidebarAccountButton {{
+    background-color: {colors['bg_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 10px;
+}}
+
+QPushButton#sidebarAccountTextButton {{
+    background-color: transparent;
+    border: none;
+    text-align: left;
+    padding: 0;
+}}
+
+QPushButton#sidebarAccountTextButton:hover {{
+    background-color: transparent;
+}}
+
+QPushButton#avatarButton {{
+    background-color: {colors['accent']};
+    color: {colors['bg_primary']};
+    border: none;
+    border-radius: 19px;
+    font-size: 12px;
+    font-weight: 800;
+}}
+
+QPushButton#avatarButton:hover {{
+    background-color: {colors['accent_hover']};
+}}
+
 QPushButton#navButton {{
     background-color: transparent;
     color: {colors['text_muted']};
@@ -189,6 +219,12 @@ QLabel#pageSubtitle {{
     letter-spacing: 0.3px;
 }}
 
+QLabel#validationLabel {{
+    color: {colors['warning']};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
 QFrame#tickerBar {{
     background-color: {colors['bg_tertiary']};
     border: 1px solid {colors['border_primary']};
@@ -199,6 +235,27 @@ QLabel#tickerLabel {{
     color: {colors['text_secondary']};
     font-size: 12px;
     font-weight: 600;
+}}
+
+QLabel#alertBanner {{
+    background-color: {colors['bg_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 10px;
+    color: {colors['text_primary']};
+    padding: 0 14px;
+    font-size: 12px;
+    font-weight: 700;
+}}
+
+QLabel#alertBanner[state="alert"] {{
+    background-color: rgba(239, 68, 68, 0.18);
+    border-color: {colors['error']};
+    color: #ffdede;
+}}
+
+QLabel#alertBanner[state="tracking"] {{
+    background-color: rgba(34, 197, 94, 0.14);
+    border-color: {colors['success']};
 }}
 
 QFrame#monitorPanel {{
@@ -221,7 +278,7 @@ QFrame#monitorMetricCard {{
 
 QLabel#metricValue {{
     color: {colors['text_primary']};
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 700;
 }}
 
@@ -415,6 +472,11 @@ QLabel#logConf {{
     font-size: 10px;
 }}
 
+QWidget#logEntry[selected="true"] {{
+    border-left: 3px solid {colors['accent']};
+    background-color: {colors['bg_hover']};
+}}
+
 QScrollArea#logScroll {{
     background-color: transparent;
     border: none;
@@ -555,6 +617,22 @@ QPushButton#tileRemoveButton:hover {{
     color: {colors['error']};
 }}
 
+QPushButton#gridToggle {{
+    background-color: transparent;
+    color: {colors['text_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+QPushButton#gridToggle:checked {{
+    border-color: {colors['accent']};
+    color: {colors['text_primary']};
+    background-color: {colors['bg_hover']};
+}}
+
 /* Status dots */
 QLabel#statusDotActive {{
     background-color: {colors['status_active']};
@@ -651,6 +729,10 @@ QLineEdit:focus {{
     border-color: {colors['accent']};
 }}
 
+QLineEdit[invalid="true"] {{
+    border-color: {colors['error']};
+}}
+
 QSpinBox {{
     background-color: {colors['input_bg']};
     border: 1px solid {colors['border_primary']};
@@ -688,6 +770,10 @@ QTextEdit {{
 
 QTextEdit:focus {{
     border-color: {colors['accent']};
+}}
+
+QTextEdit[invalid="true"] {{
+    border-color: {colors['error']};
 }}
 
 QComboBox {{

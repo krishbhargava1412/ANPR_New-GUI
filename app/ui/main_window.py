@@ -50,8 +50,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Vision - ANPR Command Center")
         self.setMinimumSize(QSize(1100, 700))
         self._user_menu = None
-        self._create_menu_bar()
         self._build_ui()
+        self._create_user_menu()
         self._initialize_runtime()
         self._camera_workers: dict[int, CameraWorker] = {}
         self._apply_saved_camera_config(load_ui_settings())
@@ -90,10 +90,8 @@ class MainWindow(QMainWindow):
                 "You must login to use the application.",
             )
 
-    def _create_menu_bar(self):
-        menubar = self.menuBar()
-
-        self._user_menu = menubar.addMenu("User")
+    def _create_user_menu(self):
+        self._user_menu = QMenu(self)
         self._update_user_menu()
 
     def _update_user_menu(self):
@@ -104,9 +102,12 @@ class MainWindow(QMainWindow):
         user = get_current_user()
         if user:
             action = self._user_menu.addAction(
-                f"Logged in: {user['username']} ({user['role']})"
+                f"{user.get('full_name', user['username'])} | {user['role'].title()}"
             )
             action.setEnabled(False)
+
+            username_action = self._user_menu.addAction(f"@{user['username']}")
+            username_action.setEnabled(False)
 
             self._user_menu.addSeparator()
 
@@ -125,6 +126,7 @@ class MainWindow(QMainWindow):
         else:
             login_action = self._user_menu.addAction("Login")
             login_action.triggered.connect(self._on_login)
+        self._sync_sidebar_user()
 
     def _on_change_password(self):
         from app.ui.login import show_change_password_dialog
@@ -167,6 +169,7 @@ class MainWindow(QMainWindow):
 
         self._sidebar = Sidebar()
         self._sidebar.page_changed.connect(self._switch_page)
+        self._sidebar.user_menu_requested.connect(self._show_sidebar_user_menu)
         root.addWidget(self._sidebar)
 
         self._stack = QStackedWidget()
@@ -200,6 +203,7 @@ class MainWindow(QMainWindow):
 
         self._switch_page("dashboard")
         self.statusBar().showMessage("Ready")
+        self._sync_sidebar_user()
         
         # Apply saved theme
         settings = load_ui_settings()
@@ -274,6 +278,23 @@ class MainWindow(QMainWindow):
     def _on_theme_changed(self, theme: str):
         """Handle theme change signal from settings page."""
         self._apply_theme(theme)
+
+    def _sync_sidebar_user(self):
+        user = get_current_user()
+        if user:
+            self._sidebar.set_user_info(
+                user.get("full_name", user["username"]),
+                user.get("role", ""),
+                user.get("username", ""),
+            )
+        else:
+            self._sidebar.set_user_info("Not signed in", "Guest", "")
+
+    def _show_sidebar_user_menu(self, button):
+        if self._user_menu is None:
+            return
+        self._update_user_menu()
+        self._user_menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
 
     def closeEvent(self, event):
         for worker in self._camera_workers.values():

@@ -4,6 +4,7 @@ import csv
 import importlib.metadata
 import importlib.util
 import json
+import statistics
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,12 @@ from app.storage import (
     get_logs_dir,
     get_watchlist_path,
     get_plate_log_path,
+    get_ui_settings_path,
     ensure_storage_dirs,
     get_db_path,
     get_awiros_anpr_dir,
+    load_storage_paths,
+    save_storage_paths,
 )
 
 from app.detection.legacy_backend import (
@@ -27,18 +31,7 @@ from app.detection.legacy_backend import (
     loaded_model_path,
 )
 
-
-OUTPUTS_DIR = get_snapshots_dir()
-OUTPUT_LOG_DIR = get_logs_dir()
 OCR_DIR = get_awiros_anpr_dir()
-SNAPSHOT_DIR = get_snapshots_dir()
-WATCHLIST_PATH = get_watchlist_path()
-PLATE_LOG_PATH = get_plate_log_path()
-
-OUTPUT_CSV_DIR = get_logs_dir() / "csv"
-OUTPUT_VIDEO_DIR = get_logs_dir() / "videos"
-SETTINGS_PATH = get_logs_dir() / "ui_settings.json"
-APP_LOG_PATH = get_logs_dir() / "anpr_app.log"
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,26 +40,69 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "frame_skip": 5,
     "save_snapshots": True,
     "watchlist_alerts_enabled": True,
+    "sound_alerts_enabled": True,
     "camera_indices": "",
     "default_camera": -1,
     "auto_start_cameras": False,
     "ip_camera_urls": "",
+    "model_name": "LicensePlateDetector.pt",
     "theme": "dark",
 }
 
 
+def get_outputs_dir() -> Path:
+    return get_snapshots_dir()
+
+
+def get_output_log_dir() -> Path:
+    return get_logs_dir()
+
+
+def get_snapshot_dir() -> Path:
+    return get_snapshots_dir()
+
+
+def get_watchlist_runtime_path() -> Path:
+    return get_watchlist_path()
+
+
+def get_plate_log_runtime_path() -> Path:
+    return get_plate_log_path()
+
+
+def get_output_csv_dir() -> Path:
+    return get_logs_dir() / "csv"
+
+
+def get_output_video_dir() -> Path:
+    return Path(load_storage_paths()["videos_dir"])
+
+
+def get_settings_path() -> Path:
+    return get_ui_settings_path()
+
+
+def get_app_log_path() -> Path:
+    return get_logs_dir() / "anpr_app.log"
+
+
+def get_case_flags_path() -> Path:
+    return get_logs_dir() / "case_flags.json"
+
+
 def ensure_app_dirs() -> None:
     ensure_storage_dirs()
-    OUTPUT_CSV_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    get_output_csv_dir().mkdir(parents=True, exist_ok=True)
+    get_output_video_dir().mkdir(parents=True, exist_ok=True)
 
 
 def load_ui_settings() -> dict[str, Any]:
     ensure_app_dirs()
-    if not SETTINGS_PATH.exists():
+    settings_path = get_settings_path()
+    if not settings_path.exists():
         return DEFAULT_UI_SETTINGS.copy()
     try:
-        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return DEFAULT_UI_SETTINGS.copy()
     merged = DEFAULT_UI_SETTINGS.copy()
@@ -80,8 +116,22 @@ def save_ui_settings(settings: dict[str, Any]) -> dict[str, Any]:
     ensure_app_dirs()
     merged = DEFAULT_UI_SETTINGS.copy()
     merged.update(settings)
-    SETTINGS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    get_settings_path().write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return merged
+
+
+def available_model_names() -> list[str]:
+    model_dir = APP_ROOT / "assets" / "models"
+    if not model_dir.exists():
+        return ["LicensePlateDetector.pt"]
+    names = sorted(
+        [
+            path.name
+            for path in model_dir.iterdir()
+            if path.is_file() and path.suffix in {".pt", ".onnx"}
+        ]
+    )
+    return names or ["LicensePlateDetector.pt"]
 
 
 def parse_camera_indices(raw_value: str) -> list[int]:
@@ -171,7 +221,8 @@ def search_plate_log(
     to_date: str = "",
 ) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
-    if not PLATE_LOG_PATH.exists():
+    plate_log_path = get_plate_log_runtime_path()
+    if not plate_log_path.exists():
         return matches
     plate = plate.upper().strip()
     source_filter = source_filter.upper().strip()
@@ -180,7 +231,7 @@ def search_plate_log(
         to_dt = datetime.strptime(to_date, "%Y-%m-%d") if to_date else None
     except ValueError:
         return matches
-    with open(PLATE_LOG_PATH, newline="", encoding="utf-8") as file:
+    with open(plate_log_path, newline="", encoding="utf-8") as file:
         for row in csv.reader(file):
             entry = parse_plate_log_row(row)
             if not entry:
@@ -214,15 +265,212 @@ def recent_detections(limit: int = 12) -> list[dict[str, Any]]:
     return list(reversed(entries[-max(1, limit) :]))
 
 
+def grouped_plate_history(
+    matches: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    entries = matches if matches is not None else search_plate_log()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        grouped.setdefault(str(entry["plate"]), []).append(entry)
+
+    flags = load_case_flags()
+    groups: list[dict[str, Any]] = []
+    for plate, plate_entries in grouped.items():
+        confidences = [
+            float(entry["confidence"])
+            for entry in plate_entries
+            if entry.get("confidence") is not None
+        ]
+        sorted_entries = sorted(
+            plate_entries,
+            key=lambda item: item.get("timestamp_dt") or datetime.min,
+        )
+        groups.append(
+            {
+                "plate": plate,
+                "count": len(sorted_entries),
+                "first_seen": sorted_entries[0]["timestamp"] if sorted_entries else "--",
+                "last_seen": sorted_entries[-1]["timestamp"] if sorted_entries else "--",
+                "avg_confidence": (
+                    statistics.fmean(confidences) if confidences else None
+                ),
+                "watchlist_hit": any(
+                    bool(item.get("watchlist_hit")) for item in sorted_entries
+                ),
+                "sources": sorted({str(item["source"]) for item in sorted_entries}),
+                "matches": sorted_entries,
+                "flagged": bool(flags.get(plate, {}).get("flagged")),
+                "note": str(flags.get(plate, {}).get("note", "")),
+            }
+        )
+
+    groups.sort(
+        key=lambda item: _safe_timestamp(item["last_seen"]),
+        reverse=True,
+    )
+    return groups
+
+
+def _safe_timestamp(timestamp: str) -> datetime:
+    try:
+        return datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return datetime.min
+
+
+def load_case_flags() -> dict[str, dict[str, Any]]:
+    ensure_app_dirs()
+    case_flags_path = get_case_flags_path()
+    if not case_flags_path.exists():
+        return {}
+    try:
+        data = json.loads(case_flags_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_case_flag(plate: str, flagged: bool, note: str = "") -> dict[str, dict[str, Any]]:
+    data = load_case_flags()
+    cleaned_plate = plate.upper().strip()
+    if not cleaned_plate:
+        return data
+    data[cleaned_plate] = {
+        "flagged": bool(flagged),
+        "note": note.strip(),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    get_case_flags_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
+
+
+def watchlist_entries() -> list[str]:
+    watchlist_path = get_watchlist_runtime_path()
+    if not watchlist_path.exists():
+        return []
+    return [
+        line.strip().upper()
+        for line in watchlist_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def save_watchlist_entries(entries: list[str]) -> None:
+    watchlist_path = get_watchlist_runtime_path()
+    watchlist_path.parent.mkdir(parents=True, exist_ok=True)
+    cleaned = []
+    for entry in entries:
+        plate = entry.strip().upper()
+        if plate and plate not in cleaned:
+            cleaned.append(plate)
+    watchlist_path.write_text("\n".join(cleaned), encoding="utf-8")
+
+
+def trend_snapshot() -> dict[str, str]:
+    detections = search_plate_log()
+    now = datetime.now()
+    windows = {
+        "current": (
+            now - timedelta(minutes=5),
+            now,
+        ),
+        "previous": (
+            now - timedelta(minutes=10),
+            now - timedelta(minutes=5),
+        ),
+    }
+
+    def _count(start: datetime, end: datetime) -> int:
+        return sum(
+            1
+            for entry in detections
+            if entry.get("timestamp_dt") is not None
+            and start <= entry["timestamp_dt"] <= end
+        )
+
+    current_hits = _count(*windows["current"])
+    previous_hits = _count(*windows["previous"])
+    delta = current_hits - previous_hits
+    direction = "up" if delta >= 0 else "down"
+    sign = "+" if delta >= 0 else ""
+    spark_values = []
+    for offset in range(5):
+        end = now - timedelta(minutes=offset)
+        start = end - timedelta(minutes=1)
+        spark_values.append(_count(start, end))
+    spark_values.reverse()
+    return {
+        "delta": f"{sign}{delta} plates/min",
+        "direction": direction,
+        "sparkline": " ".join(str(value) for value in spark_values),
+        "current_rate": f"{current_hits / 5.0:.1f}",
+    }
+
+
 def clear_plate_log() -> None:
-    if PLATE_LOG_PATH.exists():
-        PLATE_LOG_PATH.unlink()
+    plate_log_path = get_plate_log_runtime_path()
+    if plate_log_path.exists():
+        plate_log_path.unlink()
+
+
+def delete_history_entries(entries_to_delete: list[dict[str, Any]]) -> int:
+    plate_log_path = get_plate_log_runtime_path()
+    if not plate_log_path.exists():
+        return 0
+    delete_keys = {
+        (
+            str(entry.get("timestamp", "")),
+            str(entry.get("plate", "")),
+            str(entry.get("source", "")),
+            "" if entry.get("confidence") is None else f"{float(entry['confidence']):.4f}",
+            str(entry.get("snapshot_path", "")),
+            "1" if entry.get("watchlist_hit") else "0",
+        )
+        for entry in entries_to_delete
+    }
+    kept_rows: list[list[str]] = []
+    deleted = 0
+    with open(plate_log_path, newline="", encoding="utf-8") as file:
+        for row in csv.reader(file):
+            entry = parse_plate_log_row(row)
+            if not entry:
+                kept_rows.append(row)
+                continue
+            row_key = (
+                entry["timestamp"],
+                entry["plate"],
+                entry["source"],
+                "" if entry["confidence"] is None else f"{float(entry['confidence']):.4f}",
+                str(entry.get("snapshot_path", "")),
+                "1" if entry.get("watchlist_hit") else "0",
+            )
+            if row_key in delete_keys:
+                deleted += 1
+                continue
+            kept_rows.append(row)
+    with open(plate_log_path, "w", newline="", encoding="utf-8") as file:
+        csv.writer(file).writerows(kept_rows)
+    return deleted
+
+
+def delete_snapshot_file(snapshot_path: str | Path | None) -> bool:
+    if not snapshot_path:
+        return False
+    path = Path(snapshot_path)
+    if not path.exists():
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def clear_outputs() -> int:
     count = 0
-    if SNAPSHOT_DIR.exists():
-        for f in SNAPSHOT_DIR.glob("*.png"):
+    snapshot_dir = get_snapshot_dir()
+    if snapshot_dir.exists():
+        for f in snapshot_dir.glob("*.png"):
             try:
                 f.unlink()
                 count += 1
@@ -242,7 +490,7 @@ def dashboard_stats() -> dict[str, str]:
         if entry.get("confidence") is not None
     ]
     snapshot_count = (
-        len(list(SNAPSHOT_DIR.glob("*.png"))) if SNAPSHOT_DIR.exists() else 0
+        len(list(get_snapshot_dir().glob("*.png"))) if get_snapshot_dir().exists() else 0
     )
     latest = detections[-1]["timestamp"] if detections else "No detections yet"
     recent_cutoff = datetime.now() - timedelta(minutes=5)
@@ -252,6 +500,7 @@ def dashboard_stats() -> dict[str, str]:
         if entry["timestamp_dt"] is not None and entry["timestamp_dt"] >= recent_cutoff
     ]
     configured_cameras = len(get_saved_camera_sources())
+    trend = trend_snapshot()
     return {
         "detections": str(len(detections)),
         "plates": str(unique_plates),
@@ -259,12 +508,15 @@ def dashboard_stats() -> dict[str, str]:
         "watchlist_hits": str(watchlist_hits),
         "latest": latest,
         "active_cameras": str(configured_cameras),
-        "rate_per_min": f"{len(recent_hits) / 5.0:.1f}",
+        "rate_per_min": trend["current_rate"],
         "avg_confidence": (
             f"{(sum(confidence_values) / len(confidence_values)) * 100:.0f}%"
             if confidence_values
             else "--"
         ),
+        "trend_delta": trend["delta"],
+        "trend_direction": trend["direction"],
+        "sparkline": trend["sparkline"],
     }
 
 
@@ -347,7 +599,7 @@ def dependency_status() -> dict[str, str]:
         "paddle": paddle_message,
         "safetensors": "Installed" if packages["safetensors"] else "Missing",
         "ultralytics": "Installed" if packages["ultralytics"] else "Missing",
-        "plate_log": str(PLATE_LOG_PATH),
-        "watchlist": str(WATCHLIST_PATH),
-        "outputs": str(OUTPUTS_DIR),
+        "plate_log": str(get_plate_log_runtime_path()),
+        "watchlist": str(get_watchlist_runtime_path()),
+        "outputs": str(get_outputs_dir()),
     }

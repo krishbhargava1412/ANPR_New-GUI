@@ -15,7 +15,16 @@ from PyQt6.QtWidgets import (
 )
 
 from app.storage.session import login, logout, get_current_user, is_admin
-from app.storage.database import user_exists, create_user, verify_user, admin_exists, get_all_users, update_user_password, delete_user
+from app.storage.database import (
+    AVAILABLE_USER_ROLES,
+    user_exists,
+    create_user,
+    verify_user,
+    admin_exists,
+    get_all_users,
+    update_user_password,
+    delete_user,
+)
 
 
 class LoginDialog(QDialog):
@@ -116,8 +125,12 @@ class LoginDialog(QDialog):
         self._register_username_label.setObjectName("pageSubtitle")
         layout.addWidget(self._register_username_label)
 
+        self._full_name_edit = QLineEdit()
+        self._full_name_edit.setPlaceholderText("Full Name")
+        layout.addWidget(self._full_name_edit)
+
         self._role_combo = QComboBox()
-        self._role_combo.addItems(["user", "operator", "viewer"])
+        self._role_combo.addItems(AVAILABLE_USER_ROLES)
         layout.addWidget(self._role_combo)
 
         self._new_password_edit = QLineEdit()
@@ -170,12 +183,13 @@ class LoginDialog(QDialog):
                 user = get_current_user()
                 if user and user.get("role") == "admin":
                     self._register_username_label.setText(f"Create new user: {username}")
-                    self._role_combo.setCurrentText("user")
+                    self._role_combo.setCurrentText("gate keeper")
                     self._role_combo.setEnabled(True)
                 else:
                     QMessageBox.warning(self, "Error", "User not found. Contact admin to create your account.")
                     return
             
+            self._full_name_edit.clear()
             self._new_password_edit.clear()
             self._confirm_password_edit.clear()
             self._stack.setCurrentIndex(2)
@@ -198,6 +212,11 @@ class LoginDialog(QDialog):
         password = self._new_password_edit.text()
         confirm = self._confirm_password_edit.text()
         role = self._role_combo.currentText()
+        full_name = self._full_name_edit.text().strip()
+
+        if not full_name:
+            QMessageBox.warning(self, "Error", "Please enter full name")
+            return
 
         if not password:
             QMessageBox.warning(self, "Error", "Please enter a password")
@@ -214,7 +233,13 @@ class LoginDialog(QDialog):
         user = get_current_user()
         admin_id = user["id"] if user and user.get("role") == "admin" else None
 
-        new_user = create_user(self._current_username, password, role, admin_id)
+        new_user = create_user(
+            self._current_username,
+            password,
+            role,
+            admin_id,
+            full_name=full_name,
+        )
         if new_user:
             if role == "admin" or admin_id is None:
                 session = login(self._current_username, password)
@@ -347,7 +372,7 @@ def show_user_management_dialog(parent=None):
 
     table = QTableWidget()
     table.setColumnCount(5)
-    table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Created", "Actions"])
+    table.setHorizontalHeaderLabels(["ID", "Username", "Full Name", "Role", "Created"])
     table.horizontalHeader().setStretchLastSection(True)
     layout.addWidget(table)
 
@@ -361,8 +386,9 @@ def show_user_management_dialog(parent=None):
         table.insertRow(row)
         table.setItem(row, 0, QTableWidgetItem(str(u.id)))
         table.setItem(row, 1, QTableWidgetItem(u.username))
-        table.setItem(row, 2, QTableWidgetItem(u.role))
-        table.setItem(row, 3, QTableWidgetItem(u.created_at.strftime("%Y-%m-%d") if u.created_at else "-"))
+        table.setItem(row, 2, QTableWidgetItem(getattr(u, "full_name", "") or u.username))
+        table.setItem(row, 3, QTableWidgetItem(u.role))
+        table.setItem(row, 4, QTableWidgetItem(u.created_at.strftime("%Y-%m-%d") if u.created_at else "-"))
 
     btn_layout = QHBoxLayout()
     close_btn = QPushButton("CLOSE")

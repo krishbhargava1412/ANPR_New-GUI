@@ -1,9 +1,10 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QFrame, QSpacerItem, QSizePolicy, QStyle
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QFrame, QSpacerItem, QSizePolicy, QStyle, QHBoxLayout
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class Sidebar(QWidget):
     page_changed = pyqtSignal(str)
+    user_menu_requested = pyqtSignal(object)
 
     NAV_ITEMS = [
         ("DASHBOARD", "dashboard"),
@@ -82,10 +83,57 @@ class Sidebar(QWidget):
 
         layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
 
+        footer = QWidget()
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(8)
+
+        self._account_button = QFrame()
+        self._account_button.setObjectName("sidebarAccountButton")
+        self._account_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._account_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        account_layout = QHBoxLayout(self._account_button)
+        account_layout.setContentsMargins(10, 10, 10, 10)
+        account_layout.setSpacing(10)
+
+        self._avatar_button = QPushButton("U")
+        self._avatar_button.setObjectName("avatarButton")
+        self._avatar_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._avatar_button.setFixedSize(38, 38)
+        self._avatar_button.clicked.connect(lambda: self.user_menu_requested.emit(self._account_button))
+        account_layout.addWidget(self._avatar_button)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+        self._account_text_button = QPushButton()
+        self._account_text_button.setObjectName("sidebarAccountTextButton")
+        self._account_text_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._account_text_button.clicked.connect(
+            lambda: self.user_menu_requested.emit(self._account_button)
+        )
+
+        text_button_layout = QVBoxLayout(self._account_text_button)
+        text_button_layout.setContentsMargins(0, 0, 0, 0)
+        text_button_layout.setSpacing(2)
+
+        self._user_name_label = QLabel("Not signed in")
+        self._user_name_label.setObjectName("panelTitle")
+        self._user_role_label = QLabel("Guest")
+        self._user_role_label.setObjectName("pageSubtitle")
+        text_button_layout.addWidget(self._user_name_label)
+        text_button_layout.addWidget(self._user_role_label)
+        text_layout.addWidget(self._account_text_button)
+        account_layout.addLayout(text_layout, 1)
+
         version = QLabel("v0.1.0")
         version.setObjectName("appSubtitle")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(version)
+
+        footer_layout.addWidget(self._account_button)
+        footer_layout.addWidget(version)
+        layout.addWidget(footer)
 
         self._set_active("dashboard")
 
@@ -105,3 +153,10 @@ class Sidebar(QWidget):
             self._buttons[page_id].setProperty("active", True)
             self._buttons[page_id].style().unpolish(self._buttons[page_id])
             self._buttons[page_id].style().polish(self._buttons[page_id])
+
+    def set_user_info(self, full_name: str, role: str, username: str = ""):
+        display_name = full_name.strip() or username.strip() or "Unknown User"
+        initials = "".join(part[0].upper() for part in display_name.split()[:2]) or "U"
+        self._avatar_button.setText(initials[:2])
+        self._user_name_label.setText(display_name)
+        self._user_role_label.setText(role.title() if role else "Guest")

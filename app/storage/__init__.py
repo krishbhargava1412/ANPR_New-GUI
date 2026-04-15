@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import sys
+import json
 from pathlib import Path
 
 from platformdirs import PlatformDirs
@@ -19,6 +20,59 @@ USER_DATA_DIR = Path(_platform_dirs.user_data_dir)
 USER_CONFIG_DIR = Path(_platform_dirs.user_config_dir)
 USER_CACHE_DIR = Path(_platform_dirs.user_cache_dir)
 USER_STATE_DIR = Path(_platform_dirs.user_state_dir)
+STORAGE_CONFIG_PATH = USER_CONFIG_DIR / "storage_paths.json"
+
+
+def _default_storage_paths() -> dict[str, str]:
+    return {
+        "snapshots_dir": str(USER_DATA_DIR / "snapshots"),
+        "logs_dir": str(USER_DATA_DIR / "logs"),
+        "videos_dir": str(USER_DATA_DIR / "logs" / "videos"),
+        "watchlist_path": str(USER_DATA_DIR / "watchlist.txt"),
+        "plate_log_path": str(USER_DATA_DIR / "logs" / "detected_plates_log.csv"),
+        "settings_path": str(USER_DATA_DIR / "logs" / "ui_settings.json"),
+        "db_path": str(USER_DATA_DIR / "anpr.db"),
+        "models_dir": str(USER_DATA_DIR / "models"),
+        "assets_dir": str(USER_DATA_DIR / "assets"),
+    }
+
+
+def load_storage_paths() -> dict[str, str]:
+    defaults = _default_storage_paths()
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not STORAGE_CONFIG_PATH.exists():
+        return defaults
+    try:
+        data = json.loads(STORAGE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    merged = defaults.copy()
+    for key in defaults:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            merged[key] = value.strip()
+    return merged
+
+
+def save_storage_paths(paths: dict[str, str]) -> dict[str, str]:
+    previous = load_storage_paths()
+    current = previous.copy()
+    for key, value in paths.items():
+        if key in current and isinstance(value, str) and value.strip():
+            current[key] = value.strip()
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    STORAGE_CONFIG_PATH.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    ensure_storage_dirs()
+    for key in ("watchlist_path", "plate_log_path", "settings_path"):
+        old_path = Path(previous[key])
+        new_path = Path(current[key])
+        if old_path == new_path or not old_path.exists() or new_path.exists():
+            continue
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old_path, new_path)
+    return current
 
 
 def get_app_dir() -> Path:
@@ -26,27 +80,31 @@ def get_app_dir() -> Path:
 
 
 def get_db_path() -> Path:
-    return USER_DATA_DIR / "anpr.db"
+    return Path(load_storage_paths()["db_path"])
 
 
 def get_snapshots_dir() -> Path:
-    return USER_DATA_DIR / "snapshots"
+    return Path(load_storage_paths()["snapshots_dir"])
 
 
 def get_logs_dir() -> Path:
-    return USER_DATA_DIR / "logs"
+    return Path(load_storage_paths()["logs_dir"])
 
 
 def get_watchlist_path() -> Path:
-    return USER_DATA_DIR / "watchlist.txt"
+    return Path(load_storage_paths()["watchlist_path"])
 
 
 def get_plate_log_path() -> Path:
-    return get_logs_dir() / "detected_plates_log.csv"
+    return Path(load_storage_paths()["plate_log_path"])
+
+
+def get_ui_settings_path() -> Path:
+    return Path(load_storage_paths()["settings_path"])
 
 
 def get_assets_dir() -> Path:
-    return USER_DATA_DIR / "assets"
+    return Path(load_storage_paths()["assets_dir"])
 
 
 def get_awiros_anpr_dir() -> Path:
@@ -62,10 +120,11 @@ def get_awiros_dict_path() -> Path:
 
 
 def get_model_path(model_name: str) -> Path:
-    return USER_DATA_DIR / "models" / model_name
+    return Path(load_storage_paths()["models_dir"]) / model_name
 
 
 def ensure_storage_dirs() -> None:
+    configured = load_storage_paths()
     dirs = [
         USER_DATA_DIR,
         USER_CONFIG_DIR,
@@ -74,6 +133,12 @@ def ensure_storage_dirs() -> None:
         get_snapshots_dir(),
         get_logs_dir(),
         get_assets_dir(),
+        Path(configured["models_dir"]),
+        Path(configured["videos_dir"]),
+        get_db_path().parent,
+        get_watchlist_path().parent,
+        get_plate_log_path().parent,
+        get_ui_settings_path().parent,
     ]
     for directory in dirs:
         directory.mkdir(parents=True, exist_ok=True)

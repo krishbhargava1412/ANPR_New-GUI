@@ -1,8 +1,8 @@
 """
 On-screen log panel.
 
-Displays PlateResult entries in a scrollable list.
-Deduplicates: same plate text within _DEDUP_WINDOW_SEC is not logged twice.
+Displays PlateResult entries in a scrollable list with selection support for
+the operator workflow.
 """
 
 from __future__ import annotations
@@ -10,19 +10,31 @@ from __future__ import annotations
 import time
 from collections import deque
 
+from PyQt6.QtCore import QDateTime, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QFrame, QSizePolicy
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QDateTime
 
 from app.detection.plate_pipeline import PlateResult
 
 
-class LogEntry(QWidget):
+class LogEntry(QFrame):
+    selected = pyqtSignal(object)
+    hovered = pyqtSignal(object)
+
     def __init__(self, result: PlateResult, parent=None):
         super().__init__(parent)
+        self.result = result
         self.setObjectName("logEntry")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("selected", False)
         if result.watchlist_hit:
             self.setProperty("severity", "alert")
         elif result.confidence < 0.75:
@@ -37,12 +49,13 @@ class LogEntry(QWidget):
         ts = QDateTime.fromSecsSinceEpoch(int(result.timestamp)).toString("hh:mm:ss")
         time_label = QLabel(ts)
         time_label.setObjectName("logTime")
-        time_label.setFixedWidth(55)
+        time_label.setFixedWidth(62)
         layout.addWidget(time_label)
 
-        cam_label = QLabel(f"CAM {result.camera_index}")
+        cam_label = QLabel(result.source or f"CAM {result.camera_index}")
         cam_label.setObjectName("logCam")
-        cam_label.setFixedWidth(44)
+        cam_label.setFixedWidth(78)
+        cam_label.setWordWrap(True)
         layout.addWidget(cam_label)
 
         plate_label = QLabel(result.text)
@@ -52,24 +65,40 @@ class LogEntry(QWidget):
 
         conf_label = QLabel(f"{result.confidence:.0%}")
         conf_label.setObjectName("logConf")
-        conf_label.setFixedWidth(38)
+        conf_label.setFixedWidth(42)
         conf_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(conf_label)
 
+    def set_selected(self, selected: bool):
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected.emit(self.result)
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event):
+        self.hovered.emit(self.result)
+        super().enterEvent(event)
+
 
 class LogPanel(QWidget):
-    """
-    Scrollable log of detected plates.
-    """
-
     _DEDUP_WINDOW_SEC = 3.0
     _MAX_ENTRIES = 200
+
+    result_selected = pyqtSignal(object)
+    result_hovered = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("logPanel")
         self._recent: deque[tuple[str, float]] = deque(maxlen=100)
         self._entry_count = 0
+        self._entries: list[LogEntry] = []
+        self._selected_entry: LogEntry | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -77,21 +106,19 @@ class LogPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # header
         header = QWidget()
         header.setObjectName("logHeader")
         header.setFixedHeight(40)
         h_layout = QHBoxLayout(header)
         h_layout.setContentsMargins(12, 0, 12, 0)
 
-        title = QLabel("DETECTIONS")
+        title = QLabel("LIVE DETECTION STREAM")
         title.setObjectName("logHeaderTitle")
         h_layout.addWidget(title)
 
         self._count_label = QLabel("0")
         self._count_label.setObjectName("logCount")
         h_layout.addWidget(self._count_label)
-
         h_layout.addStretch()
 
         clear_btn = QPushButton("CLEAR")
@@ -100,7 +127,6 @@ class LogPanel(QWidget):
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.clicked.connect(self.clear)
         h_layout.addWidget(clear_btn)
-
         root.addWidget(header)
 
         divider = QFrame()
@@ -108,7 +134,6 @@ class LogPanel(QWidget):
         divider.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(divider)
 
-        # column headers
         col_header = QWidget()
         col_header.setObjectName("logColHeader")
         col_header.setFixedHeight(28)
@@ -117,10 +142,10 @@ class LogPanel(QWidget):
         col_layout.setSpacing(12)
 
         for text, width, align in [
-            ("TIME", 55, Qt.AlignmentFlag.AlignLeft),
-            ("SRC", 44, Qt.AlignmentFlag.AlignLeft),
-            ("PLATE TEXT", 0, Qt.AlignmentFlag.AlignLeft),
-            ("CONF", 38, Qt.AlignmentFlag.AlignRight),
+            ("TIME", 62, Qt.AlignmentFlag.AlignLeft),
+            ("SRC", 78, Qt.AlignmentFlag.AlignLeft),
+            ("PLATE", 0, Qt.AlignmentFlag.AlignLeft),
+            ("CONF", 42, Qt.AlignmentFlag.AlignRight),
         ]:
             lbl = QLabel(text)
             lbl.setObjectName("logColLabel")
@@ -138,7 +163,6 @@ class LogPanel(QWidget):
         divider2.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(divider2)
 
-        # scroll area
         self._scroll = QScrollArea()
         self._scroll.setObjectName("logScroll")
         self._scroll.setWidgetResizable(True)
@@ -158,6 +182,7 @@ class LogPanel(QWidget):
     def add_results(self, results: list[PlateResult]):
         now = time.time()
         added = 0
+        newest_entry: LogEntry | None = None
 
         for result in results:
             if self._is_duplicate(result.text, now):
@@ -165,33 +190,52 @@ class LogPanel(QWidget):
 
             self._recent.append((result.text, now))
             entry = LogEntry(result)
-
-            # insert before the stretch at the bottom
-            self._list_layout.insertWidget(self._list_layout.count() - 1, entry)
+            entry.selected.connect(self._on_entry_selected)
+            entry.hovered.connect(self.result_hovered.emit)
+            self._list_layout.insertWidget(0, entry)
+            self._entries.insert(0, entry)
+            newest_entry = entry
             added += 1
             self._entry_count += 1
 
-            # trim if over max
             if self._entry_count > self._MAX_ENTRIES:
-                item = self._list_layout.takeAt(0)
-                if item and item.widget():
-                    item.widget().deleteLater()
-                    self._entry_count -= 1
+                old_entry = self._entries.pop()
+                self._list_layout.removeWidget(old_entry)
+                old_entry.deleteLater()
+                self._entry_count -= 1
 
         if added:
             self._count_label.setText(str(self._entry_count))
-            # auto-scroll to bottom
+            if newest_entry is not None:
+                self._on_entry_selected(newest_entry.result)
             sb = self._scroll.verticalScrollBar()
-            sb.setValue(sb.maximum())
+            sb.setValue(sb.minimum())
+
+    def set_selected_result(self, result: PlateResult | None):
+        matched_entry = None
+        if result is not None:
+            for entry in self._entries:
+                if entry.result.timestamp == result.timestamp and entry.result.text == result.text:
+                    matched_entry = entry
+                    break
+        self._selected_entry = matched_entry
+        for entry in self._entries:
+            entry.set_selected(entry is matched_entry)
 
     def clear(self):
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
             if item and item.widget():
                 item.widget().deleteLater()
+        self._entries.clear()
+        self._selected_entry = None
         self._entry_count = 0
         self._count_label.setText("0")
         self._recent.clear()
+
+    def _on_entry_selected(self, result: PlateResult):
+        self.result_selected.emit(result)
+        self.set_selected_result(result)
 
     def _is_duplicate(self, text: str, now: float) -> bool:
         for prev_text, prev_time in self._recent:
