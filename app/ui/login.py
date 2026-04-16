@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -15,7 +15,16 @@ from PyQt6.QtWidgets import (
 )
 
 from app.storage.session import login, logout, get_current_user, is_admin
-from app.storage.database import user_exists, create_user, verify_user, admin_exists, get_all_users, update_user_password, delete_user
+from app.storage.database import (
+    AVAILABLE_USER_ROLES,
+    user_exists,
+    create_user,
+    verify_user,
+    admin_exists,
+    get_all_users,
+    update_user_password,
+    delete_user,
+)
 
 
 class LoginDialog(QDialog):
@@ -25,23 +34,32 @@ class LoginDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Authentication")
         self.setModal(True)
-        self.setFixedSize(400, 300)
+        self.setMinimumSize(360, 280)
+        self.resize(420, 320)
         self._build_ui()
+
+
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
+        self._root_layout = layout
 
         title = QLabel("VISION")
         title.setObjectName("appTitle")
-        title.setAlignment(QVBoxLayout().alignment())
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Enter your credentials")
+        subtitle = QLabel("Authenticate to access the ANPR Command Center")
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
         layout.addSpacing(20)
+
+        # Focus username immediately when dialog shown
+        self.showEvent = lambda e: self._username_edit.setFocus()
 
         self._stack = QStackedWidget()
 
@@ -63,7 +81,6 @@ class LoginDialog(QDialog):
 
         self._username_edit = QLineEdit()
         self._username_edit.setPlaceholderText("Username")
-        self._username_edit.setMinimumWidth(200)
         layout.addWidget(self._username_edit)
 
         self._next_btn = QPushButton("NEXT")
@@ -87,7 +104,18 @@ class LoginDialog(QDialog):
         self._password_edit = QLineEdit()
         self._password_edit.setPlaceholderText("Password")
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self._password_edit)
+
+        pass_layout = QHBoxLayout()
+        pass_layout.setContentsMargins(0, 0, 0, 0)
+        pass_layout.setSpacing(8)
+        pass_layout.addWidget(self._password_edit)
+
+        self._login_toggle_btn = QPushButton("Show")
+        self._login_toggle_btn.setCheckable(True)
+        self._login_toggle_btn.clicked.connect(lambda checked: self._password_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        pass_layout.addWidget(self._login_toggle_btn)
+
+        layout.addLayout(pass_layout)
 
         btn_layout = QHBoxLayout()
         
@@ -116,19 +144,40 @@ class LoginDialog(QDialog):
         self._register_username_label.setObjectName("pageSubtitle")
         layout.addWidget(self._register_username_label)
 
+        self._full_name_edit = QLineEdit()
+        self._full_name_edit.setPlaceholderText("Full Name")
+        layout.addWidget(self._full_name_edit)
+
         self._role_combo = QComboBox()
-        self._role_combo.addItems(["user", "operator", "viewer"])
+        self._role_combo.addItems(AVAILABLE_USER_ROLES)
         layout.addWidget(self._role_combo)
 
         self._new_password_edit = QLineEdit()
         self._new_password_edit.setPlaceholderText("Create Password")
         self._new_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self._new_password_edit)
 
         self._confirm_password_edit = QLineEdit()
         self._confirm_password_edit.setPlaceholderText("Confirm Password")
         self._confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self._confirm_password_edit)
+        
+        pass_layout1 = QHBoxLayout()
+        pass_layout1.setContentsMargins(0, 0, 0, 0)
+        pass_layout1.addWidget(self._new_password_edit)
+        self._new_toggle_btn = QPushButton("Show")
+        self._new_toggle_btn.setCheckable(True)
+        self._new_toggle_btn.clicked.connect(lambda checked: self._new_password_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        pass_layout1.addWidget(self._new_toggle_btn)
+        
+        pass_layout2 = QHBoxLayout()
+        pass_layout2.setContentsMargins(0, 0, 0, 0)
+        pass_layout2.addWidget(self._confirm_password_edit)
+        self._confirm_toggle_btn = QPushButton("Show")
+        self._confirm_toggle_btn.setCheckable(True)
+        self._confirm_toggle_btn.clicked.connect(lambda checked: self._confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
+        pass_layout2.addWidget(self._confirm_toggle_btn)
+
+        layout.addLayout(pass_layout1)
+        layout.addLayout(pass_layout2)
 
         btn_layout = QHBoxLayout()
         
@@ -161,6 +210,7 @@ class LoginDialog(QDialog):
             self._login_username_label.setText(f"Welcome back, {username}")
             self._password_edit.clear()
             self._stack.setCurrentIndex(1)
+            self._password_edit.setFocus()
         else:
             if not admin_exists():
                 self._register_username_label.setText(f"First admin: {username}\nCreate password to continue")
@@ -170,12 +220,13 @@ class LoginDialog(QDialog):
                 user = get_current_user()
                 if user and user.get("role") == "admin":
                     self._register_username_label.setText(f"Create new user: {username}")
-                    self._role_combo.setCurrentText("user")
+                    self._role_combo.setCurrentText("gate keeper")
                     self._role_combo.setEnabled(True)
                 else:
                     QMessageBox.warning(self, "Error", "User not found. Contact admin to create your account.")
                     return
             
+            self._full_name_edit.clear()
             self._new_password_edit.clear()
             self._confirm_password_edit.clear()
             self._stack.setCurrentIndex(2)
@@ -198,6 +249,11 @@ class LoginDialog(QDialog):
         password = self._new_password_edit.text()
         confirm = self._confirm_password_edit.text()
         role = self._role_combo.currentText()
+        full_name = self._full_name_edit.text().strip()
+
+        if not full_name:
+            QMessageBox.warning(self, "Error", "Please enter full name")
+            return
 
         if not password:
             QMessageBox.warning(self, "Error", "Please enter a password")
@@ -214,7 +270,13 @@ class LoginDialog(QDialog):
         user = get_current_user()
         admin_id = user["id"] if user and user.get("role") == "admin" else None
 
-        new_user = create_user(self._current_username, password, role, admin_id)
+        new_user = create_user(
+            self._current_username,
+            password,
+            role,
+            admin_id,
+            full_name=full_name,
+        )
         if new_user:
             if role == "admin" or admin_id is None:
                 session = login(self._current_username, password)
@@ -230,6 +292,16 @@ class LoginDialog(QDialog):
 
     def get_username(self):
         return getattr(self, '_current_username', '')
+
+    def resizeEvent(self, event):
+        width = self.width()
+        if width < 420:
+            self._root_layout.setContentsMargins(12, 12, 12, 12)
+        elif width < 560:
+            self._root_layout.setContentsMargins(16, 16, 16, 16)
+        else:
+            self._root_layout.setContentsMargins(24, 24, 24, 24)
+        super().resizeEvent(event)
 
 
 def show_login_dialog(parent=None) -> bool:
@@ -265,7 +337,7 @@ def show_change_password_dialog(parent=None) -> bool:
     dialog = QDialog(parent)
     dialog.setWindowTitle("Change Password")
     dialog.setModal(True)
-    dialog.setFixedSize(350, 200)
+    dialog.setFixedSize(360, 260)
 
     layout = QVBoxLayout(dialog)
     layout.setSpacing(12)
@@ -347,7 +419,7 @@ def show_user_management_dialog(parent=None):
 
     table = QTableWidget()
     table.setColumnCount(5)
-    table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Created", "Actions"])
+    table.setHorizontalHeaderLabels(["ID", "Username", "Full Name", "Role", "Created"])
     table.horizontalHeader().setStretchLastSection(True)
     layout.addWidget(table)
 
@@ -361,8 +433,9 @@ def show_user_management_dialog(parent=None):
         table.insertRow(row)
         table.setItem(row, 0, QTableWidgetItem(str(u.id)))
         table.setItem(row, 1, QTableWidgetItem(u.username))
-        table.setItem(row, 2, QTableWidgetItem(u.role))
-        table.setItem(row, 3, QTableWidgetItem(u.created_at.strftime("%Y-%m-%d") if u.created_at else "-"))
+        table.setItem(row, 2, QTableWidgetItem(getattr(u, "full_name", "") or u.username))
+        table.setItem(row, 3, QTableWidgetItem(u.role))
+        table.setItem(row, 4, QTableWidgetItem(u.created_at.strftime("%Y-%m-%d") if u.created_at else "-"))
 
     btn_layout = QHBoxLayout()
     close_btn = QPushButton("CLOSE")

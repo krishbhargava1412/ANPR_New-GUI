@@ -8,89 +8,100 @@ class Theme(Enum):
     DARK = "dark"
     LIGHT = "light"
 
-
 def get_theme_colors(theme: Theme | str) -> dict[str, str]:
-    """Get color palette for the specified theme."""
+    """Material + Neumorphic grayscale palette with correct elevation (background darker than components)."""
     if isinstance(theme, str):
         theme = Theme(theme)
-    
+
     if theme == Theme.DARK:
         return {
-            # Base colors
-            "bg_primary": "#0f172a",
-            "bg_secondary": "#111c34",
-            "bg_tertiary": "#1e293b",
-            "bg_hover": "#263244",
-            
-            # Text colors
-            "text_primary": "#f8fafc",
-            "text_secondary": "#cbd5e1",
-            "text_tertiary": "#94a3b8",
-            "text_muted": "#64748b",
-            
-            # Border colors
-            "border_primary": "#243145",
-            "border_secondary": "#334155",
-            "border_tertiary": "#182235",
-            
-            # Accent colors
+            # Base (background darkest → components lighter)
+            "bg_primary": "#000000",
+            "bg_secondary": "#0a0a0a",
+            "bg_tertiary": "#121212",
+            "bg_hover": "#1a1a1a",
+
+            # Text
+            "text_primary": "#ffffff",
+            "text_secondary": "#d4d4d4",
+            "text_tertiary": "#a3a3a3",
+            "text_muted": "#737373",
+
+            # Borders
+            "border_primary": "#1c1c1c",
+            "border_secondary": "#262626",
+            "border_tertiary": "#141414",
+
+            # Accent
             "accent": "#3b82f6",
-            "accent_hover": "#60a5fa",
-            "accent_pressed": "#2563eb",
+            "accent_hover": "#2563eb",
+            "accent_pressed": "#1d4ed8",
+
+            # Semantic
             "success": "#22c55e",
             "warning": "#f59e0b",
             "error": "#ef4444",
-            "error_hover": "#3b1215",
-            
-            # Status indicators
+            "error_hover": "#dc2626",
+
+            # Status
             "status_active": "#22c55e",
-            "status_inactive": "#64748b",
+            "status_inactive": "#6b7280",
             "status_error": "#ef4444",
-            
-            # Special
-            "input_bg": "#0b1324",
-            "card_bg": "#111c34",
-            "log_bg": "#09111f",
-        }
-    else:  # LIGHT theme
-        return {
-            # Base colors
-            "bg_primary": "#ffffff",
-            "bg_secondary": "#f5f5f5",
-            "bg_tertiary": "#efefef",
-            "bg_hover": "#e8e8e8",
-            
-            # Text colors
-            "text_primary": "#1a1a1a",
-            "text_secondary": "#555555",
-            "text_tertiary": "#777777",
-            "text_muted": "#999999",
-            
-            # Border colors
-            "border_primary": "#e0e0e0",
-            "border_secondary": "#d0d0d0",
-            "border_tertiary": "#dadada",
-            
-            # Accent colors
-            "accent": "#0066cc",
-            "accent_hover": "#0052a3",
-            "accent_pressed": "#00539a",
-            "success": "#00aa44",
-            "warning": "#ff9900",
-            "error": "#dd0000",
-            "error_hover": "#cc0000",
-            
-            # Status indicators
-            "status_active": "#00aa44",
-            "status_inactive": "#cccccc",
-            "status_error": "#dd0000",
-            
-            # Special
-            "input_bg": "#ffffff",
-            "card_bg": "#f9f9f9",
-            "log_bg": "#fafafa",
+
+            # Surfaces (lighter than bg → correct elevation)
+            "input_bg": "#141414",
+            "card_bg": "#181818",
+            "log_bg": "#101010",
+
+            # Neumorphic shadows (inset contrast)
+            "shadow_light": "rgba(255,255,255,0.05)",
+            "shadow_dark": "rgba(0,0,0,0.95)",
         }
 
+    else:
+        return {
+            # Base (background light → components slightly darker)
+            "bg_primary": "#f5f5f5",
+            "bg_secondary": "#eeeeee",
+            "bg_tertiary": "#e4e4e4",
+            "bg_hover": "#dadada",
+
+            # Text
+            "text_primary": "#0f0f0f",
+            "text_secondary": "#404040",
+            "text_tertiary": "#6b6b6b",
+            "text_muted": "#9a9a9a",
+
+            # Borders
+            "border_primary": "#dcdcdc",
+            "border_secondary": "#cfcfcf",
+            "border_tertiary": "#e8e8e8",
+
+            # Accent
+            "accent": "#2563eb",
+            "accent_hover": "#1d4ed8",
+            "accent_pressed": "#1e40af",
+
+            # Semantic
+            "success": "#16a34a",
+            "warning": "#d97706",
+            "error": "#dc2626",
+            "error_hover": "#b91c1c",
+
+            # Status
+            "status_active": "#16a34a",
+            "status_inactive": "#9ca3af",
+            "status_error": "#dc2626",
+
+            # Surfaces (darker than background → elevation)
+            "input_bg": "#ffffff",
+            "card_bg": "#ffffff",
+            "log_bg": "#fafafa",
+
+            # Neumorphic shadows
+            "shadow_light": "rgba(255,255,255,0.9)",
+            "shadow_dark": "rgba(0,0,0,0.08)",
+        }
 
 def generate_stylesheet(theme: Theme | str) -> str:
     """Generate complete stylesheet for the specified theme."""
@@ -111,6 +122,30 @@ QMainWindow {{
 
 QWidget#centralWidget {{
     background-color: {colors['bg_primary']};
+}}
+
+/* Alert Banner */
+QPushButton#alertBanner {{
+    text-align: left;
+    padding: 0 16px;
+    font-weight: 700;
+    font-size: 13px;
+    border-radius: 6px;
+    border: none;
+    background-color: {colors['bg_secondary']};
+    color: {colors['text_tertiary']};
+}}
+
+QPushButton#alertBanner[state="tracking"] {{
+    background-color: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}}
+
+QPushButton#alertBanner[state="alert"] {{
+    background-color: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
 }}
 
 /* Sidebar */
@@ -134,6 +169,71 @@ QLabel#appSubtitle {{
     font-weight: 400;
 }}
 
+QFrame#sidebarAccountButton {{
+    background-color: {colors['bg_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 10px;
+}}
+
+QPushButton#sidebarAccountTextButton {{
+    background-color: transparent;
+    border: none;
+    text-align: left;
+    padding: 2px 0;
+}}
+
+QPushButton#sidebarAccountTextButton:hover {{
+    background-color: transparent;
+}}
+
+QFrame#sidebarAccountButton:hover {{
+    border-color: {colors['border_secondary']};
+    background-color: {colors['bg_hover']};
+}}
+
+QPushButton#avatarButton {{
+    background-color: {colors['accent']};
+    color: {colors['bg_primary']};
+    border: none;
+    border-radius: 19px;
+    font-size: 12px;
+    font-weight: 800;
+}}
+
+QPushButton#avatarButton:hover {{
+    background-color: {colors['accent_hover']};
+}}
+
+QMenu {{
+    background-color: {colors['bg_secondary']};
+    color: {colors['text_primary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 12px;
+    padding: 8px;
+}}
+
+QMenu::item {{
+    padding: 10px 14px;
+    border-radius: 8px;
+    background-color: transparent;
+}}
+
+QMenu::item:selected {{
+    background-color: {colors['bg_hover']};
+    color: {colors['text_primary']};
+}}
+
+QMenu::item:disabled {{
+    color: {colors['text_tertiary']};
+    background-color: transparent;
+}}
+
+QMenu::separator {{
+    height: 1px;
+    background: {colors['border_primary']};
+    margin: 6px 8px;
+}}
+
 QPushButton#navButton {{
     background-color: transparent;
     color: {colors['text_muted']};
@@ -153,8 +253,9 @@ QPushButton#navButton:hover {{
 
 QPushButton#navButton[active="true"] {{
     background-color: {colors['bg_hover']};
-    color: {colors['text_primary']};
-    border-left: 2px solid {colors['accent']};
+    color: {colors['accent']};
+    border-left: 3px solid {colors['accent']};
+    font-weight: 700;
 }}
 
 QLabel#sectionLabel {{
@@ -189,6 +290,12 @@ QLabel#pageSubtitle {{
     letter-spacing: 0.3px;
 }}
 
+QLabel#validationLabel {{
+    color: {colors['warning']};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
 QFrame#tickerBar {{
     background-color: {colors['bg_tertiary']};
     border: 1px solid {colors['border_primary']};
@@ -199,6 +306,29 @@ QLabel#tickerLabel {{
     color: {colors['text_secondary']};
     font-size: 12px;
     font-weight: 600;
+}}
+
+QLabel#alertBanner {{
+    background-color: {colors['bg_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 10px;
+    color: {colors['text_primary']};
+    padding: 0 14px;
+    font-size: 12px;
+    font-weight: 700;
+}}
+
+QLabel#alertBanner[state="alert"] {{
+    background-color: rgba(239, 68, 68, 0.15);
+    border-color: {colors['error']};
+    color: {colors['error']};
+    font-weight: 800;
+}}
+
+QLabel#alertBanner[state="tracking"] {{
+    background-color: rgba(34, 197, 94, 0.12);
+    border-color: {colors['success']};
+    color: {colors['success']};
 }}
 
 QFrame#monitorPanel {{
@@ -221,7 +351,7 @@ QFrame#monitorMetricCard {{
 
 QLabel#metricValue {{
     color: {colors['text_primary']};
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 700;
 }}
 
@@ -250,7 +380,7 @@ QLabel#dropZone:hover {{
 /* Primary button */
 QPushButton#primaryButton {{
     background-color: {colors['accent']};
-    color: {colors['bg_primary']};
+    color: #ffffff;
     border: none;
     border-radius: 8px;
     padding: 12px 28px;
@@ -265,6 +395,11 @@ QPushButton#primaryButton:hover {{
 
 QPushButton#primaryButton:pressed {{
     background-color: {colors['accent_pressed']};
+}}
+
+QPushButton#primaryButton:disabled {{
+    background-color: {colors['border_secondary']};
+    color: {colors['text_muted']};
 }}
 
 /* Secondary button */
@@ -282,6 +417,48 @@ QPushButton#secondaryButton {{
 QPushButton#secondaryButton:hover {{
     border-color: {colors['border_secondary']};
     color: {colors['text_secondary']};
+    background-color: {colors['bg_hover']};
+}}
+
+QPushButton#secondaryButton:disabled {{
+    border-color: {colors['border_tertiary']};
+    color: {colors['text_muted']};
+}}
+
+/* Danger button */
+QPushButton#dangerButton {{
+    background-color: transparent;
+    color: {colors['error']};
+    border: 1px solid {colors['error']};
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}}
+
+QPushButton#dangerButton:hover {{
+    background-color: {colors['error']};
+    color: #ffffff;
+}}
+
+/* Success indicator label */
+QLabel#successIndicator {{
+    color: {colors['success']};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+QLabel#warningIndicator {{
+    color: {colors['warning']};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+QLabel#errorIndicator {{
+    color: {colors['error']};
+    font-size: 11px;
+    font-weight: 600;
 }}
 
 /* Status bar */
@@ -415,6 +592,11 @@ QLabel#logConf {{
     font-size: 10px;
 }}
 
+QWidget#logEntry[selected="true"] {{
+    border-left: 3px solid {colors['accent']};
+    background-color: {colors['bg_hover']};
+}}
+
 QScrollArea#logScroll {{
     background-color: transparent;
     border: none;
@@ -490,18 +672,21 @@ QLabel#cameraState {{
 }}
 
 QLabel#cameraState[status="live"] {{
-    background-color: rgba(34, 197, 94, 0.16);
+    background-color: rgba(34, 197, 94, 0.14);
     color: {colors['success']};
+    border: 1px solid {colors['success']};
 }}
 
 QLabel#cameraState[status="lost"] {{
-    background-color: rgba(239, 68, 68, 0.16);
+    background-color: rgba(239, 68, 68, 0.14);
     color: {colors['error']};
+    border: 1px solid {colors['error']};
 }}
 
 QLabel#cameraState[status="idle"] {{
-    background-color: rgba(148, 163, 184, 0.16);
+    background-color: rgba(148, 163, 184, 0.14);
     color: {colors['text_tertiary']};
+    border: 1px solid {colors['border_primary']};
 }}
 
 QLabel#cameraFrameLabel {{
@@ -553,6 +738,22 @@ QPushButton#tileRemoveButton:hover {{
     background-color: {colors['error_hover']};
     border-color: {colors['error']};
     color: {colors['error']};
+}}
+
+QPushButton#gridToggle {{
+    background-color: transparent;
+    color: {colors['text_tertiary']};
+    border: 1px solid {colors['border_primary']};
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+QPushButton#gridToggle:checked {{
+    border-color: {colors['accent']};
+    color: {colors['text_primary']};
+    background-color: {colors['bg_hover']};
 }}
 
 /* Status dots */
@@ -651,6 +852,10 @@ QLineEdit:focus {{
     border-color: {colors['accent']};
 }}
 
+QLineEdit[invalid="true"] {{
+    border-color: {colors['error']};
+}}
+
 QSpinBox {{
     background-color: {colors['input_bg']};
     border: 1px solid {colors['border_primary']};
@@ -688,6 +893,10 @@ QTextEdit {{
 
 QTextEdit:focus {{
     border-color: {colors['accent']};
+}}
+
+QTextEdit[invalid="true"] {{
+    border-color: {colors['error']};
 }}
 
 QComboBox {{
@@ -841,3 +1050,30 @@ QCheckBox::indicator:unchecked:disabled {{
 """
     
     return stylesheet
+
+
+def apply_drop_shadow(widget, theme: Theme | str = Theme.DARK):
+    from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+    from PyQt6.QtGui import QColor
+    
+    if isinstance(theme, str):
+        theme = Theme(theme)
+    colors = get_theme_colors(theme)
+    
+    shadow = QGraphicsDropShadowEffect()
+    shadow.setBlurRadius(15)
+    shadow.setOffset(0, 4)
+    # Use shadow_dark if available, else a static black alpha
+    color_str = colors.get('shadow_dark', 'rgba(0, 0, 0, 0.15)')
+    
+    # Parse rgba to QColor
+    if color_str.startswith('rgba'):
+        parts = color_str.replace('rgba(','').replace(')','').split(',')
+        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
+        # scale alpha to 0-255
+        a = int(float(parts[3]) * 255)
+        shadow.setColor(QColor(r, g, b, a))
+    elif color_str.startswith('#'):
+        shadow.setColor(QColor(color_str))
+        
+    widget.setGraphicsEffect(shadow)

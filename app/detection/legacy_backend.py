@@ -36,18 +36,11 @@ LOGGER = logging.getLogger("anpr_new_gui.detection")
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_DIR = APP_ROOT / "assets"
-PADDLEOCR_SOURCE_DIR = APP_ROOT.parent / "PaddleOCR"
 OCR_DIR = get_awiros_anpr_dir()
 OCR_MODEL_DIR = get_awiros_model_dir()
 OCR_DICT_PATH = get_awiros_dict_path()
-OCR_CONFIG_PATH = OCR_MODEL_DIR / "inference.yml"
+OCR_CONFIG_PATH = OCR_MODEL_DIR / "PP-OCRv5_server_rec.yml"
 OCR_WEIGHTS_PATH = OCR_MODEL_DIR / "model.safetensors"
-OUTPUTS_DIR = get_snapshots_dir()
-OUTPUT_LOG_DIR = get_logs_dir()
-SNAPSHOT_DIR = get_snapshots_dir()
-WATCHLIST_PATH = get_watchlist_path()
-PLATE_LOG_PATH = get_plate_log_path()
-
 LEGACY_LICENSE_PLATE_MODEL_PATH = get_model_path("LicensePlateDetector.pt")
 
 PLATE_REGEX = r"^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]{6,10}$"
@@ -122,16 +115,20 @@ def validate_detection_runtime() -> None:
         raise FileNotFoundError(
             f"Awiros OCR weights not found: {OCR_WEIGHTS_PATH}"
         )
-    if not PADDLEOCR_SOURCE_DIR.exists():
-        raise FileNotFoundError(
-            "PaddleOCR source directory not found at "
-            f"{PADDLEOCR_SOURCE_DIR}. Clone the official PaddleOCR repo there."
-        )
 
     resolve_plate_model_path()
 
 
 def resolve_plate_model_path() -> Path:
+    from app.services.app_runtime import load_ui_settings
+
+    settings = load_ui_settings()
+    configured_name = str(settings.get("model_name", "LicensePlateDetector.pt")).strip()
+    if configured_name:
+        configured_path = get_model_path(configured_name)
+        if configured_path.exists():
+            return configured_path
+
     if LEGACY_LICENSE_PLATE_MODEL_PATH.exists():
         return LEGACY_LICENSE_PLATE_MODEL_PATH
 
@@ -264,8 +261,10 @@ class AwirosAnprReader:
 
         import sys
 
-        if str(PADDLEOCR_SOURCE_DIR) not in sys.path:
-            sys.path.insert(0, str(PADDLEOCR_SOURCE_DIR))
+        # Ensure the current directory is in sys.path so the in-repo 'ppocr' package can be found
+        current_dir = Path(__file__).resolve().parent
+        if str(current_dir) not in sys.path:
+            sys.path.insert(0, str(current_dir))
 
         from ppocr.modeling.architectures import build_model
 
@@ -278,8 +277,7 @@ class AwirosAnprReader:
         self._device = _get_paddle_device()
         paddle.set_device(self._device)
 
-        config_path = PADDLEOCR_SOURCE_DIR / "configs" / "rec" / "PP-OCRv5" / "PP-OCRv5_server_rec.yml"
-        with config_path.open("r", encoding="utf-8") as handle:
+        with OCR_CONFIG_PATH.open("r", encoding="utf-8") as handle:
             model_cfg = yaml.safe_load(handle)
         model_cfg["Architecture"]["Head"]["out_channels_list"] = {
             "CTCLabelDecode": len(self._characters) + 1,
@@ -622,10 +620,25 @@ def read_license_plate(license_plate_crop):
     return None, None
 
 
-def detect_plates_in_frame(model, frame, confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD) -> list[dict[str, object]]:
+def detect_plates_in_frame(
+    model, 
+    frame, 
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    proxy_resolution_enabled: bool = True
+) -> list[dict[str, object]]:
     detections: list[dict[str, object]] = []
+    
+    orig_h, orig_w = frame.shape[:2]
+    scale_ratio = 1.0
+    inference_frame = frame
+
+    if proxy_resolution_enabled and orig_w > 640:
+        scale_ratio = 640.0 / orig_w
+        target_h = int(orig_h * scale_ratio)
+        inference_frame = cv2.resize(frame, (640, target_h))
+        
     try:
-        predictions = model.predict(frame, conf=confidence_threshold, verbose=False)
+        predictions = model.predict(inference_frame, conf=confidence_threshold, verbose=False)
         boxes = predictions[0].boxes
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Model inference failed on frame: %s", exc)
@@ -635,9 +648,18 @@ def detect_plates_in_frame(model, frame, confidence_threshold: float = DEFAULT_C
         if conf < confidence_threshold:
             continue
         cls_id = int(box.cls[0])
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        
+        # Scale bounding box back to original coordinates
+        x1_inf, y1_inf, x2_inf, y2_inf = map(int, box.xyxy[0])
+        x1 = max(0, int(x1_inf / scale_ratio))
+        y1 = max(0, int(y1_inf / scale_ratio))
+        x2 = min(orig_w, int(x2_inf / scale_ratio))
+        y2 = min(orig_h, int(y2_inf / scale_ratio))
+        
         if x2 <= x1 or y2 <= y1:
             continue
+            
+        # Extract high-resolution crop from the original un-scaled frame
         plate_crop = frame[y1:y2, x1:x2].copy()
         try:
             plate_text, ocr_score = read_license_plate(plate_crop)
@@ -706,7 +728,7 @@ def safe_stem(value: str) -> str:
 def next_snapshot_path(plate_number: str, source: str, timestamp: datetime | None = None) -> Path:
     ensure_runtime_dirs()
     stamp = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    return SNAPSHOT_DIR / f"{safe_stem(source)}_{safe_stem(plate_number)}_{stamp}.png"
+    return get_snapshots_dir() / f"{safe_stem(source)}_{safe_stem(plate_number)}_{stamp}.png"
 
 
 def save_plate_snapshot(plate_region, snapshot_path: Path) -> Path | None:
@@ -720,8 +742,9 @@ def save_plate_snapshot(plate_region, snapshot_path: Path) -> Path | None:
 def load_watchlist() -> set[str]:
     global _watchlist_cache, _watchlist_mtime
     ensure_runtime_dirs()
+    watchlist_path = get_watchlist_path()
     try:
-        current_mtime = WATCHLIST_PATH.stat().st_mtime
+        current_mtime = watchlist_path.stat().st_mtime
     except OSError:
         return set()
     if current_mtime == _watchlist_mtime:
@@ -729,14 +752,19 @@ def load_watchlist() -> set[str]:
     _watchlist_mtime = current_mtime
     _watchlist_cache = {
         line.strip().upper()
-        for line in WATCHLIST_PATH.read_text(encoding="utf-8").splitlines()
+        for line in watchlist_path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
     return _watchlist_cache
 
 
 def is_watchlist_hit(plate_number: str) -> bool:
-    return plate_number.upper() in load_watchlist()
+    try:
+        from app.storage.database import is_watchlist_hit as db_watchlist_hit
+        return db_watchlist_hit(plate_number)
+    except Exception:
+        # Fallback to file reading if DB is unavailable
+        return plate_number.upper() in load_watchlist()
 
 
 def append_plate_log(
@@ -750,7 +778,7 @@ def append_plate_log(
 ) -> None:
     ensure_runtime_dirs()
     now = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-    with open(PLATE_LOG_PATH, mode="a", newline="", encoding="utf-8") as file:
+    with open(get_plate_log_path(), mode="a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(
             [
                 now,

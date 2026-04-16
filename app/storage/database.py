@@ -13,6 +13,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 from app.storage import get_db_path, ensure_storage_dirs
 
 LOGGER = logging.getLogger("anpr_new_gui.storage.database")
+AVAILABLE_USER_ROLES = [
+    "gate keeper",
+    "manager",
+    "operator",
+    "viewer",
+    "admin",
+]
 
 
 class Base(DeclarativeBase):
@@ -24,6 +31,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    full_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     salt: Mapped[str] = mapped_column(String(32), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
@@ -113,6 +121,11 @@ def init_db() -> None:
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN full_name VARCHAR(100) NOT NULL DEFAULT ''"))
+            conn.commit()
+        except Exception:
+            pass
     
     create_default_admin()
 
@@ -124,6 +137,7 @@ def create_default_admin() -> None:
         if existing_admin is None:
             admin = User(
                 username="admin",
+                full_name="System Administrator",
                 password_hash=User.hash_password("admin123", "adminSalt2024"),
                 salt="adminSalt2024",
                 role="admin",
@@ -149,6 +163,7 @@ def verify_user(username: str, password: str) -> Optional[dict]:
             return {
                 "id": user.id,
                 "username": user.username,
+                "full_name": user.full_name or user.username,
                 "role": user.role,
                 "created_by_admin_id": user.created_by_admin_id,
             }
@@ -157,7 +172,13 @@ def verify_user(username: str, password: str) -> Optional[dict]:
         session.close()
 
 
-def create_user(username: str, password: str, role: str = "user", created_by_admin_id: Optional[int] = None) -> Optional[User]:
+def create_user(
+    username: str,
+    password: str,
+    role: str = "gate keeper",
+    created_by_admin_id: Optional[int] = None,
+    full_name: str = "",
+) -> Optional[User]:
     session = get_session()
     try:
         existing = session.query(User).filter(User.username == username).first()
@@ -167,6 +188,7 @@ def create_user(username: str, password: str, role: str = "user", created_by_adm
         salt = secrets.token_hex(16)
         user = User(
             username=username,
+            full_name=full_name.strip() or username,
             password_hash=User.hash_password(password, salt),
             salt=salt,
             role=role,

@@ -16,13 +16,16 @@ class CameraTile(QWidget):
     select_requested = pyqtSignal(int)
     remove_requested = pyqtSignal(int)
 
-    def __init__(self, camera_index: int, parent=None):
+    def __init__(self, camera_index: int, source: str = None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.source = source
         self._selected = False
         self._has_frame = False
         self.setObjectName("cameraTile")
         self.setMinimumSize(QSize(240, 180))
+        if self.source:
+            self.setToolTip(f"Camera ID: {self.camera_index}\nSource: {self.source}")
         self._build_ui()
 
     def _build_ui(self):
@@ -40,6 +43,8 @@ class CameraTile(QWidget):
 
         self._title = QLabel(f"CAM {self.camera_index}")
         self._title.setObjectName("cameraTileTitle")
+        if self.source:
+            self._title.setToolTip(f"Source: {self.source}")
         top_layout.addWidget(self._title)
 
         self._status_dot = QLabel()

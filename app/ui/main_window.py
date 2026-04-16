@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QPoint, QSize, Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -18,7 +18,7 @@ from app.camera.camera_worker import CameraWorker
 from app.detection.detection_page import DetectionPage
 from app.services.app_runtime import get_saved_camera_sources, load_ui_settings
 from app.ui.sidebar import Sidebar
-from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage
+from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage, WatchlistPage
 from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
 from app.ui.theme import generate_stylesheet, Theme
 from app.storage.session import is_authenticated, is_admin
@@ -45,13 +45,16 @@ class PlaceholderPage(QWidget):
 
 
 class MainWindow(QMainWindow):
+    _SMALL_BP = 1280
+    _MEDIUM_BP = 1600
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Vision - ANPR Command Center")
         self.setMinimumSize(QSize(1100, 700))
         self._user_menu = None
-        self._create_menu_bar()
         self._build_ui()
+        self._create_user_menu()
         self._initialize_runtime()
         self._camera_workers: dict[int, CameraWorker] = {}
         self._apply_saved_camera_config(load_ui_settings())
@@ -90,10 +93,8 @@ class MainWindow(QMainWindow):
                 "You must login to use the application.",
             )
 
-    def _create_menu_bar(self):
-        menubar = self.menuBar()
-
-        self._user_menu = menubar.addMenu("User")
+    def _create_user_menu(self):
+        self._user_menu = QMenu(self)
         self._update_user_menu()
 
     def _update_user_menu(self):
@@ -104,9 +105,12 @@ class MainWindow(QMainWindow):
         user = get_current_user()
         if user:
             action = self._user_menu.addAction(
-                f"Logged in: {user['username']} ({user['role']})"
+                f"{user.get('full_name', user['username'])} | {user['role'].title()}"
             )
             action.setEnabled(False)
+
+            username_action = self._user_menu.addAction(f"@{user['username']}")
+            username_action.setEnabled(False)
 
             self._user_menu.addSeparator()
 
@@ -125,6 +129,7 @@ class MainWindow(QMainWindow):
         else:
             login_action = self._user_menu.addAction("Login")
             login_action.triggered.connect(self._on_login)
+        self._sync_sidebar_user()
 
     def _on_change_password(self):
         from app.ui.login import show_change_password_dialog
@@ -155,6 +160,7 @@ class MainWindow(QMainWindow):
         self._user_management_page = UserManagementPage()
         self._stack.addWidget(self._user_management_page)
         self._stack.setCurrentWidget(self._user_management_page)
+        self._apply_responsive_layouts()
 
     def _build_ui(self):
         central = QWidget()
@@ -167,6 +173,7 @@ class MainWindow(QMainWindow):
 
         self._sidebar = Sidebar()
         self._sidebar.page_changed.connect(self._switch_page)
+        self._sidebar.user_menu_requested.connect(self._show_sidebar_user_menu)
         root.addWidget(self._sidebar)
 
         self._stack = QStackedWidget()
@@ -176,6 +183,7 @@ class MainWindow(QMainWindow):
         self._dashboard_page = DashboardPage()
         self._detection_page = DetectionPage()
         self._history_page = HistoryPage()
+        self._watchlist_page = WatchlistPage()
         self._settings_page = SettingsPage()
         self._about_page = AboutPage()
 
@@ -183,6 +191,7 @@ class MainWindow(QMainWindow):
             ("dashboard", self._dashboard_page),
             ("detection", self._detection_page),
             ("history", self._history_page),
+            ("watchlist", self._watchlist_page),
             ("settings", self._settings_page),
             ("about", self._about_page),
         ]
@@ -200,11 +209,30 @@ class MainWindow(QMainWindow):
 
         self._switch_page("dashboard")
         self.statusBar().showMessage("Ready")
+        self._sync_sidebar_user()
         
         # Apply saved theme
         settings = load_ui_settings()
         theme = settings.get("theme", "dark")
         self._apply_theme(theme)
+        self._apply_responsive_layouts()
+
+        self._theater_mode = False
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        self._theater_shortcut = QShortcut(QKeySequence("F11"), self)
+        self._theater_shortcut.activated.connect(self._toggle_theater_mode)
+
+    def _toggle_theater_mode(self):
+        self._theater_mode = not self._theater_mode
+        self._sidebar.setVisible(not self._theater_mode)
+        self.statusBar().setVisible(not self._theater_mode)
+        if self._theater_mode:
+            self.showFullScreen()
+        else:
+            if self.isMaximized():
+                self.showMaximized()
+            else:
+                self.showNormal()
 
     def _on_camera_config_changed(self, settings: dict):
         self._apply_saved_camera_config(settings)
@@ -254,9 +282,13 @@ class MainWindow(QMainWindow):
             self._dashboard_page.refresh()
         elif page_id == "history":
             self._history_page.refresh()
+        elif page_id == "watchlist":
+            self._watchlist_page.refresh()
         elif page_id == "about":
             self._about_page.refresh()
-        self.statusBar().showMessage(page_id.upper())
+        user = get_current_user()
+        role = user.get("role", "Operator").title() if user else "Operator"
+        self.statusBar().showMessage(f"ANPR Command Center | Workspace: {page_id.title()} | Active Session: {role}")
 
     def _apply_theme(self, theme: str):
         """Apply the specified theme to the application."""
@@ -275,7 +307,59 @@ class MainWindow(QMainWindow):
         """Handle theme change signal from settings page."""
         self._apply_theme(theme)
 
+    def _sync_sidebar_user(self):
+        user = get_current_user()
+        if user:
+            self._sidebar.set_user_info(
+                user.get("full_name", user["username"]),
+                user.get("role", ""),
+                user.get("username", ""),
+            )
+        else:
+            self._sidebar.set_user_info("Not signed in", "Guest", "")
+        self._sidebar.enforce_rbac(is_admin())
+
+    def _show_sidebar_user_menu(self, button):
+        if self._user_menu is None:
+            return
+        self._update_user_menu()
+        self._user_menu.adjustSize()
+        menu_size = self._user_menu.sizeHint()
+        anchor = button.mapToGlobal(button.rect().topLeft())
+        popup_x = anchor.x() + max(0, button.width() - menu_size.width())
+        popup_y = anchor.y() - menu_size.height() - 8
+        self._user_menu.popup(QPoint(popup_x, popup_y))
+
+    def _breakpoint_for_width(self, width: int) -> str:
+        if width < self._SMALL_BP:
+            return "small"
+        if width < self._MEDIUM_BP:
+            return "medium"
+        return "large"
+
+    def _apply_responsive_layouts(self):
+        breakpoint = self._breakpoint_for_width(self.width())
+        if hasattr(self._sidebar, "apply_responsive_layout"):
+            self._sidebar.apply_responsive_layout(breakpoint, self.width())
+
+        for widget in self._page_widgets.values():
+            if hasattr(widget, "apply_responsive_layout"):
+                widget.apply_responsive_layout(breakpoint, self.width())
+
+        if hasattr(self, "_user_management_page") and hasattr(
+            self._user_management_page, "apply_responsive_layout"
+        ):
+            self._user_management_page.apply_responsive_layout(
+                breakpoint, self.width()
+            )
+
+    def resizeEvent(self, event):
+        self._apply_responsive_layouts()
+        super().resizeEvent(event)
+
     def closeEvent(self, event):
         for worker in self._camera_workers.values():
             worker.stop()
+        if hasattr(self, '_detection_page'):
+            self._detection_page.teardown()
         super().closeEvent(event)
