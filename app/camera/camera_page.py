@@ -203,7 +203,8 @@ class CameraPage(QWidget):
         self._add_camera(idx)
 
     def _add_camera(self, index: int):
-        tile = CameraTile(camera_index=index)
+        source_label = f"Hardware Device Index: {index}"
+        tile = CameraTile(camera_index=index, source=source_label)
         tile.select_requested.connect(self._on_tile_selected)
         tile.remove_requested.connect(self._remove_camera)
         self._tiles[index] = tile

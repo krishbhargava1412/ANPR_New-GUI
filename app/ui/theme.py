@@ -32,21 +32,21 @@ def get_theme_colors(theme: Theme | str) -> dict[str, str]:
             "border_secondary": "#262626",
             "border_tertiary": "#141414",
 
-            # Accent (neutral grayscale)
-            "accent": "#2e2e2e",
-            "accent_hover": "#3a3a3a",
-            "accent_pressed": "#242424",
+            # Accent
+            "accent": "#3b82f6",
+            "accent_hover": "#2563eb",
+            "accent_pressed": "#1d4ed8",
 
-            # Semantic (still neutral)
-            "success": "#3a3a3a",
-            "warning": "#4a4a4a",
-            "error": "#2a2a2a",
-            "error_hover": "#1a1a1a",
+            # Semantic
+            "success": "#22c55e",
+            "warning": "#f59e0b",
+            "error": "#ef4444",
+            "error_hover": "#dc2626",
 
             # Status
-            "status_active": "#4a4a4a",
-            "status_inactive": "#2a2a2a",
-            "status_error": "#2a2a2a",
+            "status_active": "#22c55e",
+            "status_inactive": "#6b7280",
+            "status_error": "#ef4444",
 
             # Surfaces (lighter than bg → correct elevation)
             "input_bg": "#141414",
@@ -78,20 +78,20 @@ def get_theme_colors(theme: Theme | str) -> dict[str, str]:
             "border_tertiary": "#e8e8e8",
 
             # Accent
-            "accent": "#3a3a3a",
-            "accent_hover": "#2a2a2a",
-            "accent_pressed": "#1f1f1f",
+            "accent": "#2563eb",
+            "accent_hover": "#1d4ed8",
+            "accent_pressed": "#1e40af",
 
             # Semantic
-            "success": "#4a4a4a",
-            "warning": "#6a6a6a",
-            "error": "#2a2a2a",
-            "error_hover": "#1a1a1a",
+            "success": "#16a34a",
+            "warning": "#d97706",
+            "error": "#dc2626",
+            "error_hover": "#b91c1c",
 
             # Status
-            "status_active": "#4a4a4a",
-            "status_inactive": "#cfcfcf",
-            "status_error": "#2a2a2a",
+            "status_active": "#16a34a",
+            "status_inactive": "#9ca3af",
+            "status_error": "#dc2626",
 
             # Surfaces (darker than background → elevation)
             "input_bg": "#ffffff",
@@ -122,6 +122,30 @@ QMainWindow {{
 
 QWidget#centralWidget {{
     background-color: {colors['bg_primary']};
+}}
+
+/* Alert Banner */
+QPushButton#alertBanner {{
+    text-align: left;
+    padding: 0 16px;
+    font-weight: 700;
+    font-size: 13px;
+    border-radius: 6px;
+    border: none;
+    background-color: {colors['bg_secondary']};
+    color: {colors['text_tertiary']};
+}}
+
+QPushButton#alertBanner[state="tracking"] {{
+    background-color: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}}
+
+QPushButton#alertBanner[state="alert"] {{
+    background-color: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
 }}
 
 /* Sidebar */
@@ -229,8 +253,9 @@ QPushButton#navButton:hover {{
 
 QPushButton#navButton[active="true"] {{
     background-color: {colors['bg_hover']};
-    color: {colors['text_primary']};
-    border-left: 2px solid {colors['accent']};
+    color: {colors['accent']};
+    border-left: 3px solid {colors['accent']};
+    font-weight: 700;
 }}
 
 QLabel#sectionLabel {{
@@ -294,14 +319,16 @@ QLabel#alertBanner {{
 }}
 
 QLabel#alertBanner[state="alert"] {{
-    background-color: rgba(239, 68, 68, 0.18);
+    background-color: rgba(239, 68, 68, 0.15);
     border-color: {colors['error']};
-    color: #ffdede;
+    color: {colors['error']};
+    font-weight: 800;
 }}
 
 QLabel#alertBanner[state="tracking"] {{
-    background-color: rgba(34, 197, 94, 0.14);
+    background-color: rgba(34, 197, 94, 0.12);
     border-color: {colors['success']};
+    color: {colors['success']};
 }}
 
 QFrame#monitorPanel {{
@@ -353,7 +380,7 @@ QLabel#dropZone:hover {{
 /* Primary button */
 QPushButton#primaryButton {{
     background-color: {colors['accent']};
-    color: {colors['bg_primary']};
+    color: #ffffff;
     border: none;
     border-radius: 8px;
     padding: 12px 28px;
@@ -368,6 +395,11 @@ QPushButton#primaryButton:hover {{
 
 QPushButton#primaryButton:pressed {{
     background-color: {colors['accent_pressed']};
+}}
+
+QPushButton#primaryButton:disabled {{
+    background-color: {colors['border_secondary']};
+    color: {colors['text_muted']};
 }}
 
 /* Secondary button */
@@ -385,6 +417,48 @@ QPushButton#secondaryButton {{
 QPushButton#secondaryButton:hover {{
     border-color: {colors['border_secondary']};
     color: {colors['text_secondary']};
+    background-color: {colors['bg_hover']};
+}}
+
+QPushButton#secondaryButton:disabled {{
+    border-color: {colors['border_tertiary']};
+    color: {colors['text_muted']};
+}}
+
+/* Danger button */
+QPushButton#dangerButton {{
+    background-color: transparent;
+    color: {colors['error']};
+    border: 1px solid {colors['error']};
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}}
+
+QPushButton#dangerButton:hover {{
+    background-color: {colors['error']};
+    color: #ffffff;
+}}
+
+/* Success indicator label */
+QLabel#successIndicator {{
+    color: {colors['success']};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+QLabel#warningIndicator {{
+    color: {colors['warning']};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+QLabel#errorIndicator {{
+    color: {colors['error']};
+    font-size: 11px;
+    font-weight: 600;
 }}
 
 /* Status bar */
@@ -598,18 +672,21 @@ QLabel#cameraState {{
 }}
 
 QLabel#cameraState[status="live"] {{
-    background-color: rgba(34, 197, 94, 0.16);
+    background-color: rgba(34, 197, 94, 0.14);
     color: {colors['success']};
+    border: 1px solid {colors['success']};
 }}
 
 QLabel#cameraState[status="lost"] {{
-    background-color: rgba(239, 68, 68, 0.16);
+    background-color: rgba(239, 68, 68, 0.14);
     color: {colors['error']};
+    border: 1px solid {colors['error']};
 }}
 
 QLabel#cameraState[status="idle"] {{
-    background-color: rgba(148, 163, 184, 0.16);
+    background-color: rgba(148, 163, 184, 0.14);
     color: {colors['text_tertiary']};
+    border: 1px solid {colors['border_primary']};
 }}
 
 QLabel#cameraFrameLabel {{
@@ -973,3 +1050,30 @@ QCheckBox::indicator:unchecked:disabled {{
 """
     
     return stylesheet
+
+
+def apply_drop_shadow(widget, theme: Theme | str = Theme.DARK):
+    from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+    from PyQt6.QtGui import QColor
+    
+    if isinstance(theme, str):
+        theme = Theme(theme)
+    colors = get_theme_colors(theme)
+    
+    shadow = QGraphicsDropShadowEffect()
+    shadow.setBlurRadius(15)
+    shadow.setOffset(0, 4)
+    # Use shadow_dark if available, else a static black alpha
+    color_str = colors.get('shadow_dark', 'rgba(0, 0, 0, 0.15)')
+    
+    # Parse rgba to QColor
+    if color_str.startswith('rgba'):
+        parts = color_str.replace('rgba(','').replace(')','').split(',')
+        r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
+        # scale alpha to 0-255
+        a = int(float(parts[3]) * 255)
+        shadow.setColor(QColor(r, g, b, a))
+    elif color_str.startswith('#'):
+        shadow.setColor(QColor(color_str))
+        
+    widget.setGraphicsEffect(shadow)

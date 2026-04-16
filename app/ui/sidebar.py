@@ -10,6 +10,7 @@ class Sidebar(QWidget):
         ("DASHBOARD", "dashboard"),
         ("DETECTION", "detection"),
         ("HISTORY", "history"),
+        ("WATCHLIST", "watchlist"),
     ]
 
     def __init__(self, parent=None):
@@ -30,7 +31,7 @@ class Sidebar(QWidget):
         layout.addWidget(title)
         self._title_label = title
 
-        subtitle = QLabel("OCR + YOLO")
+        subtitle = QLabel("ANPR COMMAND CENTER")
         subtitle.setObjectName("appSubtitle")
         layout.addWidget(subtitle)
         self._subtitle_label = subtitle
@@ -160,6 +161,10 @@ class Sidebar(QWidget):
         role_text = role.title() if role else "Guest"
         detail = f"{role_text}  |  @{username}" if username.strip() else role_text
         self._user_role_label.setText(detail)
+
+    def enforce_rbac(self, is_admin: bool):
+        if "settings" in self._buttons:
+            self._buttons["settings"].setVisible(is_admin)
 
     def apply_responsive_layout(self, breakpoint: str, window_width: int):
         if breakpoint == "small":

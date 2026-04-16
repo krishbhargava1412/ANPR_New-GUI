@@ -18,7 +18,7 @@ from app.camera.camera_worker import CameraWorker
 from app.detection.detection_page import DetectionPage
 from app.services.app_runtime import get_saved_camera_sources, load_ui_settings
 from app.ui.sidebar import Sidebar
-from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage
+from app.ui.workspace_pages import AboutPage, DashboardPage, HistoryPage, SettingsPage, WatchlistPage
 from app.ui.login import show_login_dialog, show_logout_dialog, get_current_user
 from app.ui.theme import generate_stylesheet, Theme
 from app.storage.session import is_authenticated, is_admin
@@ -183,6 +183,7 @@ class MainWindow(QMainWindow):
         self._dashboard_page = DashboardPage()
         self._detection_page = DetectionPage()
         self._history_page = HistoryPage()
+        self._watchlist_page = WatchlistPage()
         self._settings_page = SettingsPage()
         self._about_page = AboutPage()
 
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
             ("dashboard", self._dashboard_page),
             ("detection", self._detection_page),
             ("history", self._history_page),
+            ("watchlist", self._watchlist_page),
             ("settings", self._settings_page),
             ("about", self._about_page),
         ]
@@ -214,6 +216,23 @@ class MainWindow(QMainWindow):
         theme = settings.get("theme", "dark")
         self._apply_theme(theme)
         self._apply_responsive_layouts()
+
+        self._theater_mode = False
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        self._theater_shortcut = QShortcut(QKeySequence("F11"), self)
+        self._theater_shortcut.activated.connect(self._toggle_theater_mode)
+
+    def _toggle_theater_mode(self):
+        self._theater_mode = not self._theater_mode
+        self._sidebar.setVisible(not self._theater_mode)
+        self.statusBar().setVisible(not self._theater_mode)
+        if self._theater_mode:
+            self.showFullScreen()
+        else:
+            if self.isMaximized():
+                self.showMaximized()
+            else:
+                self.showNormal()
 
     def _on_camera_config_changed(self, settings: dict):
         self._apply_saved_camera_config(settings)
@@ -263,9 +282,13 @@ class MainWindow(QMainWindow):
             self._dashboard_page.refresh()
         elif page_id == "history":
             self._history_page.refresh()
+        elif page_id == "watchlist":
+            self._watchlist_page.refresh()
         elif page_id == "about":
             self._about_page.refresh()
-        self.statusBar().showMessage(page_id.upper())
+        user = get_current_user()
+        role = user.get("role", "Operator").title() if user else "Operator"
+        self.statusBar().showMessage(f"ANPR Command Center | Workspace: {page_id.title()} | Active Session: {role}")
 
     def _apply_theme(self, theme: str):
         """Apply the specified theme to the application."""
@@ -294,6 +317,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self._sidebar.set_user_info("Not signed in", "Guest", "")
+        self._sidebar.enforce_rbac(is_admin())
 
     def _show_sidebar_user_menu(self, button):
         if self._user_menu is None:
@@ -336,4 +360,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         for worker in self._camera_workers.values():
             worker.stop()
+        if hasattr(self, '_detection_page'):
+            self._detection_page.teardown()
         super().closeEvent(event)

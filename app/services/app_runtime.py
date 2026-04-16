@@ -24,7 +24,6 @@ from app.storage import (
 
 from app.detection.legacy_backend import (
     DEFAULT_CONFIDENCE_THRESHOLD,
-    PADDLEOCR_SOURCE_DIR,
     _prepare_paddle_windows_runtime,
     current_runtime_devices,
     ensure_runtime_dirs,
@@ -41,6 +40,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "save_snapshots": True,
     "watchlist_alerts_enabled": True,
     "sound_alerts_enabled": True,
+    "proxy_resolution_enabled": True,
     "camera_indices": "",
     "default_camera": -1,
     "auto_start_cameras": False,
@@ -442,7 +442,7 @@ def delete_history_entries(entries_to_delete: list[dict[str, Any]]) -> int:
                 entry["source"],
                 "" if entry["confidence"] is None else f"{float(entry['confidence']):.4f}",
                 str(entry.get("snapshot_path", "")),
-                "1" if entry.get("watchlist_hit") else "0",
+                "1" if entry["watchlist_hit"] else "0",
             )
             if row_key in delete_keys:
                 deleted += 1
@@ -595,7 +595,7 @@ def dependency_status() -> dict[str, str]:
         "device": device,
         "torch": torch_message,
         "opencv": "Installed" if packages["opencv"] else "Missing",
-        "awiros_anpr": "Ready" if PADDLEOCR_SOURCE_DIR.exists() else "Missing Source",
+        "awiros_anpr": "Ready (In-Repo Backend)",
         "paddle": paddle_message,
         "safetensors": "Installed" if packages["safetensors"] else "Missing",
         "ultralytics": "Installed" if packages["ultralytics"] else "Missing",

@@ -58,6 +58,7 @@ class PlatePipeline(QThread):
         self._reader = None
         self._vote_tracker = PlateVoteTracker()
         self._confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD
+        self._proxy_resolution_enabled = True
 
     def submit_frame(self, camera_index: int, frame: np.ndarray, source_label: str = ""):
         with QMutexLocker(self._mutex):
@@ -65,10 +66,12 @@ class PlatePipeline(QThread):
             self._camera_index = camera_index
             self._source_label = source_label or f"Camera {camera_index}"
 
-    def configure(self, *, confidence_threshold: float | None = None):
+    def configure(self, *, confidence_threshold: float | None = None, proxy_resolution_enabled: bool | None = None):
         with QMutexLocker(self._mutex):
             if confidence_threshold is not None:
                 self._confidence_threshold = float(confidence_threshold)
+            if proxy_resolution_enabled is not None:
+                self._proxy_resolution_enabled = bool(proxy_resolution_enabled)
 
     def set_paused(self, paused: bool):
         with QMutexLocker(self._mutex):
@@ -90,6 +93,7 @@ class PlatePipeline(QThread):
             settings = load_ui_settings()
             self.configure(
                 confidence_threshold=float(settings["confidence_threshold"]),
+                proxy_resolution_enabled=bool(settings.get("proxy_resolution_enabled", True)),
             )
             self._model = get_plate_model()
             self._reader = get_reader()
@@ -129,6 +133,7 @@ class PlatePipeline(QThread):
             self._model,
             frame,
             confidence_threshold=self._confidence_threshold,
+            proxy_resolution_enabled=self._proxy_resolution_enabled,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.telemetry.emit(

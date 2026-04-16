@@ -5,10 +5,11 @@ from pathlib import Path
 
 import cv2
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtGui import QColor, QPixmap, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -78,6 +79,12 @@ def _page_header(title: str, subtitle: str) -> QVBoxLayout:
 def _stat_card_widget(label: str) -> tuple[QWidget, QLabel]:
     card = QWidget()
     card.setObjectName("statCard")
+    try:
+        from app.ui.theme import apply_drop_shadow
+        from app.services.app_runtime import load_ui_settings
+        apply_drop_shadow(card, load_ui_settings().get("theme", "dark"))
+    except Exception:
+        pass
     layout = QVBoxLayout(card)
     layout.setContentsMargins(20, 18, 20, 18)
     layout.setSpacing(4)
@@ -92,6 +99,35 @@ def _stat_card_widget(label: str) -> tuple[QWidget, QLabel]:
     return card, value_label
 
 
+class PreviewLabel(QLabel):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._qpixmap = None
+
+    def set_image(self, pixmap: QPixmap):
+        self._qpixmap = pixmap
+        self.setText("")
+        self.update()
+        
+    def clear_image(self, text):
+        self._qpixmap = None
+        self.setText(text)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._qpixmap:
+            painter = QPainter(self)
+            scaled = self._qpixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+
 class DashboardPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,6 +136,15 @@ class DashboardPage(QWidget):
         self._trend_labels: dict[str, QLabel] = {}
         self._build_ui()
         self.refresh()
+        
+        from PyQt6.QtCore import QTimer
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._auto_refresh)
+        self._refresh_timer.start(3000)
+
+    def _auto_refresh(self):
+        if self.isVisible():
+            self.refresh()
 
     def _build_ui(self):
         outer_layout = QVBoxLayout(self)
@@ -128,6 +173,17 @@ class DashboardPage(QWidget):
         self._latest_label.setObjectName("tickerLabel")
         ticker_row.addWidget(self._latest_label)
         ticker_row.addStretch()
+
+        btn_clear_log = QPushButton("CLEAR LOG")
+        btn_clear_log.setObjectName("dangerButton")
+        btn_clear_log.clicked.connect(self._clear_log)
+        ticker_row.addWidget(btn_clear_log)
+
+        btn_clear_out = QPushButton("CLEAR OUTPUTS")
+        btn_clear_out.setObjectName("dangerButton")
+        btn_clear_out.clicked.connect(self._clear_outputs)
+        ticker_row.addWidget(btn_clear_out)
+
         layout.addWidget(ticker)
 
         self._body_grid = QGridLayout()
@@ -150,9 +206,8 @@ class DashboardPage(QWidget):
         evidence_title.setObjectName("panelTitle")
         evidence_layout.addWidget(evidence_title)
 
-        self._preview = QLabel("No recent evidence")
+        self._preview = PreviewLabel("No recent evidence")
         self._preview.setObjectName("dropZone")
-        self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumHeight(320)
         evidence_layout.addWidget(self._preview)
 
@@ -220,52 +275,12 @@ class DashboardPage(QWidget):
         right.addWidget(metrics_card)
         self._metrics_card = metrics_card
 
-        trend_card = QFrame()
-        trend_card.setObjectName("monitorPanel")
-        trend_layout = QVBoxLayout(trend_card)
-        trend_layout.setContentsMargins(14, 14, 14, 14)
-        trend_layout.setSpacing(8)
-        trend_title = QLabel("CAMERA STATUS + TRENDS")
-        trend_title.setObjectName("panelTitle")
-        trend_layout.addWidget(trend_title)
-        for key in ("delta", "sparkline", "camera_status", "watchlist"):
-            label = QLabel("--")
-            label.setObjectName("pageSubtitle")
-            label.setWordWrap(True)
-            self._trend_labels[key] = label
-            trend_layout.addWidget(label)
-        self._trend_card = trend_card
-
-        self._system_box = QGroupBox("Collapsed System Telemetry")
-        self._system_box.setCheckable(True)
-        self._system_box.setChecked(False)
-        system_layout = QGridLayout(self._system_box)
-        self._system_labels = {}
-        for idx, (label, key) in enumerate(
-            [
-                ("Device", "device"),
-                ("Model", "model_path"),
-                ("GPU / Runtime", "torch"),
-                ("OCR", "paddle"),
-                ("Errors", "outputs"),
-            ]
-        ):
-            key_label = QLabel(label)
-            key_label.setObjectName("sectionLabel")
-            value = QLabel("--")
-            value.setObjectName("pageSubtitle")
-            value.setWordWrap(True)
-            self._system_labels[key] = value
-            system_layout.addWidget(key_label, idx, 0)
-            system_layout.addWidget(value, idx, 1)
         right.addStretch()
         self._body_grid.addWidget(left_panel, 0, 0)
         self._body_grid.addWidget(right_panel, 0, 1)
         self._body_grid.setColumnStretch(0, 1)
         self._body_grid.setColumnStretch(1, 0)
         layout.addLayout(self._body_grid, stretch=1)
-        self._trend_card.hide()
-        self._system_box.hide()
         self.apply_responsive_layout("medium", 1366)
 
     def refresh(self):
@@ -278,22 +293,6 @@ class DashboardPage(QWidget):
             f"Trend {stats.get('trend_delta', '+0 plates/min')}  |  "
             f"Sparkline {stats.get('sparkline', '0 0 0 0 0')}"
         )
-        self._trend_labels["delta"].setText(
-            f"Traffic trend: {stats.get('trend_delta', '+0 plates/min')}"
-        )
-        self._trend_labels["sparkline"].setText(
-            f"Last 5 min: {stats.get('sparkline', '0 0 0 0 0')}"
-        )
-        self._trend_labels["camera_status"].setText(
-            f"Camera readiness: {stats.get('active_cameras', '0')} configured | compact operator mode active"
-        )
-        self._trend_labels["watchlist"].setText(
-            f"Watchlist pressure: {stats.get('watchlist_hits', '0')} total hit(s)"
-        )
-
-        runtime = dependency_status()
-        for key, label in self._system_labels.items():
-            label.setText(str(runtime.get(key, "--")))
 
         matches = recent_detections(12)
         self._recent_table.setRowCount(len(matches))
@@ -310,13 +309,12 @@ class DashboardPage(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, match)
                 self._recent_table.setItem(row_index, column, item)
                 if match["watchlist_hit"]:
-                    item.setBackground(Qt.GlobalColor.darkRed)
+                    item.setBackground(QColor(239, 68, 68, 50))
         if matches:
             self._recent_table.selectRow(0)
             self._populate_latest_detection(matches[0])
         else:
-            self._preview.setPixmap(QPixmap())
-            self._preview.setText("No recent evidence")
+            self._preview.clear_image("No recent evidence")
             for label in self._hero_labels.values():
                 label.setText("--")
 
@@ -350,17 +348,9 @@ class DashboardPage(QWidget):
         self._hero_labels["source"].setText(str(match["source"]))
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
-            self._preview.setPixmap(
-                pixmap.scaled(
-                    self._preview.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-            self._preview.setText("")
+            self._preview.set_image(pixmap)
         else:
-            self._preview.setPixmap(QPixmap())
-            self._preview.setText("Snapshot unavailable")
+            self._preview.clear_image("Snapshot unavailable")
 
     def apply_responsive_layout(self, breakpoint: str, window_width: int):
         margins = {
@@ -430,8 +420,10 @@ class HistoryPage(QWidget):
         self._filters_grid.setVerticalSpacing(12)
         self._plate_edit = QLineEdit()
         self._plate_edit.setPlaceholderText("Plate text")
+        self._plate_edit.returnPressed.connect(self.refresh)
         self._source_edit = QLineEdit()
         self._source_edit.setPlaceholderText("Camera / source")
+        self._source_edit.returnPressed.connect(self.refresh)
         self._time_preset = QComboBox()
         self._time_preset.addItems(["All Time", "Last 1 Hour", "Last 24 Hours", "Last 7 Days"])
         self._conf_min = QDoubleSpinBox()
@@ -459,8 +451,14 @@ class HistoryPage(QWidget):
         self._watchlist_only.hide()
         search_btn = QPushButton("SEARCH")
         search_btn.setObjectName("primaryButton")
+        search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         search_btn.clicked.connect(self.refresh)
         self._search_btn = search_btn
+        self._advanced_toggle = QPushButton("ADVANCED FILTERS")
+        self._advanced_toggle.setObjectName("secondaryButton")
+        self._advanced_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.clicked.connect(self._toggle_advanced_filters)
         layout.addWidget(self._filters_widget)
 
         summary_row = QHBoxLayout()
@@ -531,17 +529,32 @@ class HistoryPage(QWidget):
         self._notes.setFixedHeight(90)
         side.addWidget(self._notes)
 
+        btn_row = QHBoxLayout()
+        self._save_notes_btn = QPushButton("SAVE NOTES")
+        self._save_notes_btn.setObjectName("primaryButton")
+        self._save_notes_btn.clicked.connect(self._save_notes)
+        btn_row.addWidget(self._save_notes_btn)
+
         self._flag_btn = QPushButton("FLAG / UNFLAG PLATE")
         self._flag_btn.setObjectName("secondaryButton")
         self._flag_btn.clicked.connect(self._toggle_flag)
-        side.addWidget(self._flag_btn)
+        btn_row.addWidget(self._flag_btn)
+        
+        side.addLayout(btn_row)
+
+        btn_export = QPushButton("EXPORT CSV")
+        btn_export.setObjectName("secondaryButton")
+        btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_export.clicked.connect(self._export_csv)
+        side.addWidget(btn_export)
 
         for text, handler in (
             ("DELETE SNAPSHOT", self._delete_selected_snapshot),
             ("DELETE HISTORY", self._delete_selected_history),
         ):
             btn = QPushButton(text)
-            btn.setObjectName("secondaryButton")
+            btn.setObjectName("dangerButton")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(handler)
             side.addWidget(btn)
         side.addStretch()
@@ -552,6 +565,32 @@ class HistoryPage(QWidget):
 
         layout.addLayout(self._content_grid, 1)
         self.apply_responsive_layout("medium", 1366)
+
+    def _export_csv(self):
+        matches = getattr(self, "_all_matches", [])
+        if not matches:
+            QMessageBox.information(self, "Export", "No data to export.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "", "CSV Files (*.csv)")
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Time", "Plate", "Source", "Confidence", "Watchlist", "Note"])
+                for m in matches:
+                    writer.writerow([
+                        m.get("timestamp", ""),
+                        m.get("plate", ""),
+                        m.get("source", ""),
+                        m.get("confidence", ""),
+                        "Yes" if m.get("watchlist_hit") else "No",
+                        m.get("note", "")
+                    ])
+            QMessageBox.information(self, "Export", f"Successfully exported {len(matches)} records to {path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Failed", str(e))
 
     def refresh(self):
         from_date, to_date = self._resolve_time_window()
@@ -585,11 +624,11 @@ class HistoryPage(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, group)
                 self._table.setItem(row_index, column, item)
                 if group["watchlist_hit"]:
-                    item.setBackground(Qt.GlobalColor.darkRed)
+                    item.setBackground(QColor(239, 68, 68, 50))
                 elif group["flagged"]:
-                    item.setBackground(Qt.GlobalColor.darkYellow)
+                    item.setBackground(QColor(245, 158, 11, 50))
                 elif group["avg_confidence"] is not None and float(group["avg_confidence"]) < 0.75:
-                    item.setBackground(Qt.GlobalColor.darkYellow)
+                    item.setBackground(QColor(245, 158, 11, 35))
         if groups:
             self._table.selectRow(0)
         else:
@@ -626,8 +665,9 @@ class HistoryPage(QWidget):
         self._update_summary(match["plate"])
         self._notes.setPlainText(str(match.get("note", "")))
         self._flag_btn.setText("UNFLAG PLATE" if match["flagged"] else "FLAG PLATE")
-        self._sequence_table.setRowCount(len(related))
-        for row_index, entry in enumerate(reversed(related[-20:])):
+        display_items = list(reversed(related[-100:]))
+        self._sequence_table.setRowCount(len(display_items))
+        for row_index, entry in enumerate(display_items):
             values = [
                 str(entry["timestamp"]).split(" ")[-1],
                 str(entry["source"]),
@@ -658,9 +698,14 @@ class HistoryPage(QWidget):
             return
         snapshot_path = Path(str(entry.get("snapshot_path") or ""))
         if snapshot_path.exists():
-            QMessageBox.information(
-                self, "Snapshot", f"Snapshot saved at:\n{snapshot_path}"
-            )
+            try:
+                from PyQt6.QtGui import QDesktopServices
+                from PyQt6.QtCore import QUrl
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(snapshot_path)))
+            except Exception:
+                QMessageBox.information(
+                    self, "Snapshot", f"Snapshot saved at:\n{snapshot_path}"
+                )
 
     def _delete_selected_snapshot(self):
         entry = self._selected_sequence_entry()
@@ -773,6 +818,14 @@ class HistoryPage(QWidget):
         save_case_flag(str(match["plate"]), flagged, self._notes.toPlainText())
         self.refresh()
 
+    def _save_notes(self):
+        match = self._selected_match()
+        if not match:
+            return
+        save_case_flag(str(match["plate"]), bool(match["flagged"]), self._notes.toPlainText())
+        QMessageBox.information(self, "Notes Saved", "Operator notes saved successfully.")
+        self.refresh()
+
     def _show_sequence_summary(self):
         match = self._selected_match()
         if not match:
@@ -816,6 +869,7 @@ class HistoryPage(QWidget):
             self._source_edit,
             self._time_preset,
             self._search_btn,
+            self._advanced_toggle,
         ]
         columns = 2 if breakpoint == "small" else (3 if breakpoint == "medium" else 4)
         for index, widget in enumerate(filter_widgets):
@@ -834,6 +888,61 @@ class HistoryPage(QWidget):
             self._content_grid.addWidget(self._table_card, 0, 0)
             self._content_grid.addWidget(self._side_card, 0, 1)
             self._preview.setMinimumHeight(220 if breakpoint == "medium" else 260)
+
+    def _toggle_advanced_filters(self):
+        show = self._advanced_toggle.isChecked()
+        self._conf_min.setVisible(show)
+        self._conf_max.setVisible(show)
+        self._watchlist_only.setVisible(show)
+        if show:
+            self._advanced_toggle.setText("HIDE ADVANCED")
+            # Re-add advanced widgets to the grid
+            row_count = self._filters_grid.rowCount()
+            self._filters_grid.addWidget(self._conf_min, row_count, 0)
+            self._filters_grid.addWidget(self._conf_max, row_count, 1)
+            self._filters_grid.addWidget(self._watchlist_only, row_count, 2)
+        else:
+            self._advanced_toggle.setText("ADVANCED FILTERS")
+
+
+class CameraScanWorker(QThread):
+    finished_scan = pyqtSignal(list)
+    
+    def run(self):
+        import sys
+        import cv2
+
+        def _get_capture(index: int):
+            if sys.platform == "win32":
+                return cv2.VideoCapture(index, cv2.CAP_ANY)
+            return cv2.VideoCapture(index)
+
+        found = []
+        for i in range(10):
+            cap = _get_capture(i)
+            if cap.isOpened():
+                found.append(i)
+                cap.release()
+        self.finished_scan.emit(found)
+
+
+class CameraTestWorker(QThread):
+    finished_test = pyqtSignal(bool, object)
+    
+    def __init__(self, source):
+        super().__init__()
+        self.source = source
+        
+    def run(self):
+        import cv2
+        cap = cv2.VideoCapture(self.source)
+        ok, frame = cap.read()
+        cap.release()
+        if ok and frame is not None:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.finished_test.emit(True, rgb)
+        else:
+            self.finished_test.emit(False, None)
 
 
 class SettingsPage(QWidget):
@@ -943,6 +1052,10 @@ class SettingsPage(QWidget):
                     ("Confidence Threshold", self._create_confidence_slider()),
                     ("Frame Skip", self._create_frame_skip_slider()),
                     ("Model Selector", self._create_model_selector()),
+                    ("Proxy Resolution", self._create_checkbox(
+                        "Optimize Inference Performance (Downsample feed to 640p locally for YOLO detector mapping)",
+                        "proxy_resolution_enabled",
+                    )),
                 ],
             )
         )
@@ -1005,6 +1118,12 @@ class SettingsPage(QWidget):
     def _create_card(self, title: str, fields: list) -> QFrame:
         card = QFrame()
         card.setObjectName("statCard")
+        try:
+            from app.ui.theme import apply_drop_shadow
+            from app.services.app_runtime import load_ui_settings
+            apply_drop_shadow(card, load_ui_settings().get("theme", "dark"))
+        except Exception:
+            pass
 
         layout = QVBoxLayout(card)
         layout.setSpacing(16)
@@ -1079,9 +1198,9 @@ class SettingsPage(QWidget):
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(5, 100)
         slider.setSingleStep(5)
-        value = QLabel("0.50")
+        value = QLabel("50%")
         value.setObjectName("pageSubtitle")
-        slider.valueChanged.connect(lambda current: value.setText(f"{current / 100:.2f}"))
+        slider.valueChanged.connect(lambda current: value.setText(f"{current}%"))
         layout.addWidget(slider, 1)
         layout.addWidget(value)
 
@@ -1282,6 +1401,7 @@ class SettingsPage(QWidget):
             bool(settings.get("watchlist_alerts_enabled", True))
         )
         self._sound_alerts.setChecked(bool(settings.get("sound_alerts_enabled", True)))
+        self._proxy_resolution_enabled.setChecked(bool(settings.get("proxy_resolution_enabled", True)))
 
         indices = settings.get("camera_indices", "")
         self._camera_indices.setText(indices)
@@ -1324,6 +1444,7 @@ class SettingsPage(QWidget):
                 "save_snapshots": bool(self._save_snapshots.isChecked()),
                 "watchlist_alerts_enabled": bool(self._watchlist_alerts.isChecked()),
                 "sound_alerts_enabled": bool(self._sound_alerts.isChecked()),
+                "proxy_resolution_enabled": bool(self._proxy_resolution_enabled.isChecked()),
                 "camera_indices": self._camera_indices.text().strip(),
                 "ip_camera_urls": self._ip_camera_urls.toPlainText().strip(),
                 "default_camera": int(self._default_camera.value()),
@@ -1338,21 +1459,21 @@ class SettingsPage(QWidget):
         self.theme_changed.emit(theme_text)
         self._load()
 
+    def hideEvent(self, event):
+        self._save()
+        super().hideEvent(event)
+
     def scan_cameras(self):
-        import sys
-        import cv2
+        self._camera_status_label.setText("Scanning for local cameras (this may take a moment)...")
+        self._camera_validation.setText("Scan in progress, please wait.")
+        self._scan_cameras_btn.setEnabled(False)
+        
+        self._scan_thread = CameraScanWorker()
+        self._scan_thread.finished_scan.connect(self._on_scan_finished)
+        self._scan_thread.start()
 
-        def _get_capture(index: int):
-            if sys.platform == "win32":
-                return cv2.VideoCapture(index, cv2.CAP_ANY)
-            return cv2.VideoCapture(index)
-
-        found = []
-        for i in range(10):
-            cap = _get_capture(i)
-            if cap.isOpened():
-                found.append(i)
-                cap.release()
+    def _on_scan_finished(self, found: list[int]):
+        self._scan_cameras_btn.setEnabled(True)
         if found:
             self._camera_status_label.setText(f"Found: {found}")
             self._camera_indices.setText(",".join(map(str, found)))
@@ -1373,16 +1494,24 @@ class SettingsPage(QWidget):
         if source is None:
             self._camera_validation.setText("Enter a camera index or stream URL before testing.")
             return
-        cap = cv2.VideoCapture(source)
-        ok, frame = cap.read()
-        cap.release()
-        if not ok or frame is None:
+
+        self._camera_status_label.setText("Testing connection...")
+        self._camera_validation.setText("Please wait...")
+        self._test_camera_btn.setEnabled(False)
+        
+        self._test_thread = CameraTestWorker(source)
+        self._test_thread.finished_test.connect(self._on_test_finished)
+        self._test_thread.start()
+
+    def _on_test_finished(self, ok: bool, rgb: object):
+        self._test_camera_btn.setEnabled(True)
+        if not ok or rgb is None:
             self._camera_status_label.setText("Connection test failed.")
             self._camera_validation.setText("Unable to read a frame from the selected source.")
             self._camera_preview.setPixmap(QPixmap())
             self._camera_preview.setText("Preview unavailable")
             return
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
         h, w, ch = rgb.shape
         from PyQt6.QtGui import QImage
 
@@ -1444,78 +1573,74 @@ class AboutPage(QWidget):
         self._root_layout = layout
         layout.addLayout(
             _page_header(
-                "System Info",
-                "Runtime telemetry has been moved into the Dashboard so operators stay in one workspace",
+                "System Telemetry",
+                "Advanced device status, engine diagnostics, and pipeline traffic trends."
             )
         )
 
-        notice = QFrame()
-        notice.setObjectName("monitorPanel")
-        notice_layout = QVBoxLayout(notice)
-        notice_layout.setContentsMargins(20, 20, 20, 20)
-        notice_layout.setSpacing(10)
-        title = QLabel("SYSTEM INFO MOVED")
-        title.setObjectName("panelTitle")
-        body = QLabel(
-            "Open Dashboard to view device state, model runtime, storage paths, and condensed diagnostics without leaving surveillance mode."
-        )
-        body.setObjectName("pageSubtitle")
-        body.setWordWrap(True)
-        notice_layout.addWidget(title)
-        notice_layout.addWidget(body)
-        layout.addWidget(notice)
+        self._trend_labels = {}
+        trend_card = QFrame()
+        trend_card.setObjectName("monitorPanel")
+        trend_layout = QVBoxLayout(trend_card)
+        trend_layout.setContentsMargins(20, 20, 20, 20)
+        trend_layout.setSpacing(10)
+        trend_title = QLabel("PIPELINE TRENDS")
+        trend_title.setObjectName("panelTitle")
+        trend_layout.addWidget(trend_title)
+        for key in ("delta", "sparkline", "camera_status", "watchlist"):
+            label = QLabel("--")
+            label.setObjectName("pageSubtitle")
+            label.setWordWrap(True)
+            self._trend_labels[key] = label
+            trend_layout.addWidget(label)
 
-        self._info_labels = {}
-        info_box = QGroupBox("Reference Diagnostics")
-        info_layout = QGridLayout(info_box)
-        info_layout.setSpacing(12)
-        info_items = [
-            ("device_label", "Processing Device"),
-            ("model_path_label", "Model Path"),
-            ("model_exists_label", "Model Status"),
-            ("plate_log_label", "Plate Log"),
-            ("watchlist_label", "Watchlist"),
-            ("outputs_label", "Outputs Directory"),
+        self._system_labels = {}
+        system_box = QGroupBox("Device & Storage Telemetry")
+        system_layout = QGridLayout(system_box)
+        system_layout.setSpacing(12)
+        system_items = [
+            ("Processing Device", "device"),
+            ("Model Path", "model_path"),
+            ("Model Status", "model_exists"),
+            ("GPU / Torch Backend", "torch"),
+            ("OCR Paddle Backend", "paddle"),
+            ("Plate Log Database", "plate_log"),
+            ("Watchlist Entries", "watchlist"),
+            ("Error Logging Output", "outputs"),
         ]
 
-        for idx, (key, label) in enumerate(info_items):
+        for idx, (label, key) in enumerate(system_items):
             key_label = QLabel(label)
             key_label.setObjectName("sectionLabel")
-            val_label = QLabel("-")
+            val_label = QLabel("--")
             val_label.setObjectName("pageSubtitle")
             val_label.setWordWrap(True)
-            self._info_labels[key] = val_label
-            info_layout.addWidget(key_label, idx, 0)
-            info_layout.addWidget(val_label, idx, 1)
+            self._system_labels[key] = val_label
+            system_layout.addWidget(key_label, idx, 0)
+            system_layout.addWidget(val_label, idx, 1)
 
-        layout.addWidget(info_box)
+        layout.addWidget(trend_card)
+        layout.addWidget(system_box)
 
         layout.addStretch()
 
     def refresh(self):
+        stats = dashboard_stats()
+        self._trend_labels["delta"].setText(f"Traffic trend: {stats.get('trend_delta', '+0 plates/min')}")
+        self._trend_labels["sparkline"].setText(f"Last 5 min: {stats.get('sparkline', '0 0 0 0 0')}")
+        self._trend_labels["camera_status"].setText(
+            f"Camera readiness: {stats.get('active_cameras', '0')} configured"
+        )
+        self._trend_labels["watchlist"].setText(
+            f"Watchlist pressure: {stats.get('watchlist_hits', '0')} total hit(s)"
+        )
+
         status = dependency_status()
-
-        label_map = {
-            "device": "device_label",
-            "model_path": "model_path_label",
-            "model_exists": "model_exists_label",
-            "torch": "torch_label",
-            "opencv": "opencv_label",
-            "awiros_anpr": "awiros_anpr_label",
-            "paddle": "paddle_label",
-            "safetensors": "safetensors_label",
-            "ultralytics": "ultralytics_label",
-            "plate_log": "plate_log_label",
-            "watchlist": "watchlist_label",
-            "outputs": "outputs_label",
-        }
-
-        for key, label_key in label_map.items():
-            if label_key in self._info_labels:
-                value = status.get(key, "N/A")
-                if key == "model_exists":
-                    value = "Found" if value == "Yes" else "Not Found"
-                self._info_labels[label_key].setText(str(value))
+        for key, label in self._system_labels.items():
+            value = status.get(key, "N/A")
+            if key == "model_exists":
+                value = "Found" if value == "Yes" else "Not Found"
+            label.setText(str(value))
 
     def apply_responsive_layout(self, breakpoint: str, window_width: int):
         margins = {
@@ -1534,19 +1659,7 @@ class UserManagementPage(QWidget):
         self._refresh_users()
 
     def _build_ui(self):
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer_layout.addWidget(scroll)
-
-        content = QWidget()
-        scroll.setWidget(content)
-
-        layout = QVBoxLayout(content)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
         self._root_layout = layout
@@ -1554,40 +1667,18 @@ class UserManagementPage(QWidget):
             _page_header("User Management", "Manage system users and roles")
         )
 
-        self._user_table = QTableWidget()
-        self._user_table.setColumnCount(6)
-        self._user_table.setHorizontalHeaderLabels(
-            ["ID", "Username", "Full Name", "Role", "Created At", "Last Login"]
-        )
-        self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        layout.addWidget(self._user_table)
-
-        form_layout = QFormLayout()
-        form_layout.setSpacing(12)
-
-        self._new_username = QLineEdit()
-        self._new_username.setPlaceholderText("Username")
-        self._new_full_name = QLineEdit()
-        self._new_full_name.setPlaceholderText("Full Name")
-        self._new_password = QLineEdit()
-        self._new_password.setPlaceholderText("Password")
-        self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_role = QComboBox()
-        self._new_role.addItems(AVAILABLE_USER_ROLES)
-        self._new_role.setCurrentText("gate keeper")
-
-        form_layout.addRow("Username:", self._new_username)
-        form_layout.addRow("Full Name:", self._new_full_name)
-        form_layout.addRow("Password:", self._new_password)
-        form_layout.addRow("Role:", self._new_role)
-
         btn_layout = QHBoxLayout()
-        self._add_btn = QPushButton("Add User")
+        self._add_btn = QPushButton("ADD USER")
+        self._add_btn.setObjectName("primaryButton")
+        self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.clicked.connect(self._on_add_user)
-        self._delete_btn = QPushButton("Delete Selected")
+        self._delete_btn = QPushButton("DELETE SELECTED")
+        self._delete_btn.setObjectName("dangerButton")
+        self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_btn.clicked.connect(self._on_delete_user)
-        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn = QPushButton("REFRESH")
+        self._refresh_btn.setObjectName("secondaryButton")
+        self._refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._refresh_btn.clicked.connect(self._refresh_users)
 
         btn_layout.addWidget(self._add_btn)
@@ -1595,8 +1686,32 @@ class UserManagementPage(QWidget):
         btn_layout.addWidget(self._refresh_btn)
         btn_layout.addStretch()
 
-        layout.addLayout(form_layout)
         layout.addLayout(btn_layout)
+
+        table_card = QFrame()
+        table_card.setObjectName("statCard")
+        try:
+            from app.ui.theme import apply_drop_shadow
+            from app.services.app_runtime import load_ui_settings
+            apply_drop_shadow(table_card, load_ui_settings().get("theme", "dark"))
+        except Exception:
+            pass
+
+        table_layout = QVBoxLayout(table_card)
+        table_layout.setContentsMargins(12, 12, 12, 12)
+
+        self._user_table = QTableWidget()
+        self._user_table.setColumnCount(6)
+        self._user_table.setHorizontalHeaderLabels(
+            ["ID", "Username", "Full Name", "Role", "Created At", "Last Login"]
+        )
+        self._user_table.horizontalHeader().setStretchLastSection(True)
+        self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._user_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table_layout.addWidget(self._user_table)
+        
+        layout.addWidget(table_card, stretch=1)
         self.apply_responsive_layout("medium", 1366)
 
     def _refresh_users(self):
@@ -1631,35 +1746,68 @@ class UserManagementPage(QWidget):
             )
 
     def _on_add_user(self):
-        from app.storage.database import create_user
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add User")
+        dialog.setModal(True)
+        dialog.setFixedSize(360, 260)
+        
+        layout = QVBoxLayout(dialog)
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+        
+        username_input = QLineEdit()
+        username_input.setPlaceholderText("Username")
+        full_name_input = QLineEdit()
+        full_name_input.setPlaceholderText("Full Name")
+        password_input = QLineEdit()
+        password_input.setPlaceholderText("Password")
+        password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        role_combo = QComboBox()
+        role_combo.addItems(AVAILABLE_USER_ROLES)
+        role_combo.setCurrentText("gate keeper")
 
-        username = self._new_username.text().strip()
-        full_name = self._new_full_name.text().strip()
-        password = self._new_password.text()
-        role = self._new_role.currentText().strip().lower()
+        form_layout.addRow("Username:", username_input)
+        form_layout.addRow("Full Name:", full_name_input)
+        form_layout.addRow("Password:", password_input)
+        form_layout.addRow("Role:", role_combo)
+        
+        layout.addLayout(form_layout)
+        
+        btn_layout = QHBoxLayout()
+        cancel_btn = QPushButton("CANCEL")
+        cancel_btn.setObjectName("secondaryButton")
+        cancel_btn.clicked.connect(dialog.reject)
+        create_btn = QPushButton("CREATE")
+        create_btn.setObjectName("primaryButton")
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        def attempt_create():
+            from app.storage.database import create_user
+            username = username_input.text().strip()
+            full_name = full_name_input.text().strip()
+            password = password_input.text()
+            role = role_combo.currentText().strip().lower()
 
-        if not username or not full_name or not password:
-            QMessageBox.warning(self, "Error", "Username, full name and password are required")
-            return
+            if not username or not full_name or not password:
+                QMessageBox.warning(dialog, "Error", "Username, full name and password are required")
+                return
+            if role not in AVAILABLE_USER_ROLES:
+                QMessageBox.warning(dialog, "Error", "Select a valid role")
+                return
 
-        if role not in AVAILABLE_USER_ROLES:
-            QMessageBox.warning(self, "Error", "Select a valid role")
-            return
+            user = create_user(username, password, role, full_name=full_name)
+            if user:
+                QMessageBox.information(self, "Success", f"User '{username}' created successfully")
+                dialog.accept()
+                self._refresh_users()
+            else:
+                QMessageBox.warning(dialog, "Error", "Failed to create user. Username may already exist.")
 
-        user = create_user(username, password, role, full_name=full_name)
-        if user:
-            QMessageBox.information(
-                self, "Success", f"User '{username}' created successfully"
-            )
-            self._new_username.clear()
-            self._new_full_name.clear()
-            self._new_password.clear()
-            self._new_role.setCurrentText("gate keeper")
-            self._refresh_users()
-        else:
-            QMessageBox.warning(
-                self, "Error", "Failed to create user. Username may already exist."
-            )
+        create_btn.clicked.connect(attempt_create)
+        dialog.exec()
 
     def _on_delete_user(self):
         from app.storage.database import delete_user
@@ -1703,3 +1851,156 @@ class UserManagementPage(QWidget):
             "large": (36, 36, 36, 24),
         }[breakpoint]
         self._root_layout.setContentsMargins(*margins)
+
+
+class WatchlistPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("contentArea")
+        self._build_ui()
+        self.refresh()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 28, 28, 24)
+        layout.setSpacing(14)
+
+        layout.addLayout(_page_header("Watchlist Management", "Manage flagged license plates, import bulk lists, and track threats."))
+
+        table_card = QFrame()
+        table_card.setObjectName("statCard")
+        try:
+            from app.ui.theme import apply_drop_shadow
+            from app.services.app_runtime import load_ui_settings
+            apply_drop_shadow(table_card, load_ui_settings().get("theme", "dark"))
+        except Exception:
+            pass
+
+        table_layout = QVBoxLayout(table_card)
+        table_layout.setContentsMargins(16, 16, 16, 16)
+        
+        toolbar = QHBoxLayout()
+        
+        self._plate_input = QLineEdit()
+        self._plate_input.setPlaceholderText("Enter Plate Number (e.g. MH01AB1234)")
+        self._plate_input.setMinimumWidth(200)
+        toolbar.addWidget(self._plate_input)
+        
+        self._threat_combo = QComboBox()
+        self._threat_combo.addItems(["INFO", "YELLOW", "RED"])
+        self._threat_combo.setCurrentText("INFO")
+        self._threat_combo.setToolTip("Select Threat Level")
+        toolbar.addWidget(self._threat_combo)
+
+        self._notes_input = QLineEdit()
+        self._notes_input.setPlaceholderText("Additional Notes")
+        self._notes_input.setMinimumWidth(150)
+        toolbar.addWidget(self._notes_input)
+
+        add_btn = QPushButton("ADD PLATE")
+        add_btn.setObjectName("primaryButton")
+        add_btn.clicked.connect(self._add_plate)
+        toolbar.addWidget(add_btn)
+
+        import_btn = QPushButton("IMPORT CSV")
+        import_btn.setObjectName("secondaryButton")
+        import_btn.clicked.connect(self._import_csv)
+        toolbar.addWidget(import_btn)
+
+        toolbar.addStretch()
+        
+        self._remove_btn = QPushButton("REMOVE SELECTED")
+        self._remove_btn.setObjectName("dangerButton")
+        self._remove_btn.clicked.connect(self._remove_plate)
+        toolbar.addWidget(self._remove_btn)
+        
+        table_layout.addLayout(toolbar)
+        table_layout.addSpacing(10)
+
+        self._table = QTableWidget()
+        self._table.setColumnCount(4)
+        self._table.setHorizontalHeaderLabels(["Plate Number", "Notes / Threat", "Added By", "Added At"])
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table_layout.addWidget(self._table)
+        
+        layout.addWidget(table_card, stretch=1)
+
+    def refresh(self):
+        from app.storage.database import get_watchlist, get_user_by_id
+        items = get_watchlist()
+        self._table.setRowCount(len(items))
+        for row, item in enumerate(items):
+            user = get_user_by_id(item.added_by)
+            user_name = user.username if user else "Unknown"
+            
+            p_item = QTableWidgetItem(item.plate_number)
+            p_item.setData(Qt.ItemDataRole.UserRole, item.plate_number)
+            self._table.setItem(row, 0, p_item)
+            
+            # Map Threat Colors explicitly
+            n_item = QTableWidgetItem(item.notes or "")
+            if "RED" in (item.notes or "").upper() or "STOLEN" in (item.notes or "").upper():
+                n_item.setBackground(QColor(239, 68, 68, 50))
+            elif "YELLOW" in (item.notes or "").upper() or "EXPIRED" in (item.notes or "").upper():
+                n_item.setBackground(QColor(245, 158, 11, 50))
+            self._table.setItem(row, 1, n_item)
+            
+            self._table.setItem(row, 2, QTableWidgetItem(user_name))
+            self._table.setItem(row, 3, QTableWidgetItem(item.added_at.strftime("%Y-%m-%d %H:%M")))
+
+    def _add_plate(self):
+        plate = self._plate_input.text().strip().upper()
+        if not plate:
+            return
+        from app.storage.database import add_watchlist_plate
+        from app.ui.login import get_current_user
+        
+        user = get_current_user()
+        uid = user["id"] if user else 1
+        
+        threat_lvl = self._threat_combo.currentText()
+        notes = self._notes_input.text().strip()
+        combined_notes = f"[{threat_lvl}] {notes}" if notes else f"[{threat_lvl}]"
+        
+        if add_watchlist_plate(plate, uid, combined_notes):
+            self._plate_input.clear()
+            self._notes_input.clear()
+            self.refresh()
+        else:
+            QMessageBox.warning(self, "Error", f"Plate {plate} is already in the watchlist or database error occurred.")
+
+    def _remove_plate(self):
+        selected = self._table.selectedItems()
+        if not selected:
+            return
+        plate = selected[0].data(Qt.ItemDataRole.UserRole)
+        reply = QMessageBox.question(self, "Confirm", f"Remove {plate} from Watchlist?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            from app.storage.database import remove_watchlist_plate
+            remove_watchlist_plate(plate)
+            self.refresh()
+
+    def _import_csv(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import Watchlist CSV", "", "CSV Files (*.csv)")
+        if not path:
+            return
+        try:
+            import csv
+            from app.storage.database import add_watchlist_plate
+            from app.ui.login import get_current_user
+            user = get_current_user()
+            uid = user["id"] if user else 1
+            added = 0
+            with open(path, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if row and row[0].strip():
+                        notes = row[1].strip() if len(row) > 1 else ""
+                        if add_watchlist_plate(row[0].strip().upper(), uid, notes):
+                            added += 1
+            QMessageBox.information(self, "Import Complete", f"Successfully imported {added} new plates to the watchlist.")
+            self.refresh()
+        except Exception as e:
+            QMessageBox.warning(self, "Import Failed", str(e))
