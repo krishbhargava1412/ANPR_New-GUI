@@ -36,11 +36,10 @@ LOGGER = logging.getLogger("anpr_new_gui.detection")
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_DIR = APP_ROOT / "assets"
-PADDLEOCR_SOURCE_DIR = APP_ROOT.parent / "PaddleOCR"
 OCR_DIR = get_awiros_anpr_dir()
 OCR_MODEL_DIR = get_awiros_model_dir()
 OCR_DICT_PATH = get_awiros_dict_path()
-OCR_CONFIG_PATH = OCR_MODEL_DIR / "inference.yml"
+OCR_CONFIG_PATH = OCR_MODEL_DIR / "PP-OCRv5_server_rec.yml"
 OCR_WEIGHTS_PATH = OCR_MODEL_DIR / "model.safetensors"
 LEGACY_LICENSE_PLATE_MODEL_PATH = get_model_path("LicensePlateDetector.pt")
 
@@ -115,11 +114,6 @@ def validate_detection_runtime() -> None:
     if not OCR_WEIGHTS_PATH.exists():
         raise FileNotFoundError(
             f"Awiros OCR weights not found: {OCR_WEIGHTS_PATH}"
-        )
-    if not PADDLEOCR_SOURCE_DIR.exists():
-        raise FileNotFoundError(
-            "PaddleOCR source directory not found at "
-            f"{PADDLEOCR_SOURCE_DIR}. Clone the official PaddleOCR repo there."
         )
 
     resolve_plate_model_path()
@@ -267,8 +261,10 @@ class AwirosAnprReader:
 
         import sys
 
-        if str(PADDLEOCR_SOURCE_DIR) not in sys.path:
-            sys.path.insert(0, str(PADDLEOCR_SOURCE_DIR))
+        # Ensure the current directory is in sys.path so the in-repo 'ppocr' package can be found
+        current_dir = Path(__file__).resolve().parent
+        if str(current_dir) not in sys.path:
+            sys.path.insert(0, str(current_dir))
 
         from ppocr.modeling.architectures import build_model
 
@@ -281,8 +277,7 @@ class AwirosAnprReader:
         self._device = _get_paddle_device()
         paddle.set_device(self._device)
 
-        config_path = PADDLEOCR_SOURCE_DIR / "configs" / "rec" / "PP-OCRv5" / "PP-OCRv5_server_rec.yml"
-        with config_path.open("r", encoding="utf-8") as handle:
+        with OCR_CONFIG_PATH.open("r", encoding="utf-8") as handle:
             model_cfg = yaml.safe_load(handle)
         model_cfg["Architecture"]["Head"]["out_channels_list"] = {
             "CTCLabelDecode": len(self._characters) + 1,

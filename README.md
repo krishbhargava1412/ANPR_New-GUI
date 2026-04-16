@@ -1,57 +1,57 @@
 # Vision — OCR + YOLOv8 License Plate Detection
 
-A PyQt6-based desktop application for real-time license plate detection using YOLOv8 and OCR via Tesseract.
+A PyQt6-based desktop application for real-time license plate detection using YOLOv8 and OCR via PaddleOCR.
 
 ## Features
 
 - **Camera Management** — Connect to multiple camera feeds, scan and add cameras to a grid
 - **License Plate Detection** — YOLOv8-based detection with bounding box overlay
-- **OCR** — Tesseract integration for extracting plate text
-- **Live Log** — Real-time detection log with deduplication
-- **Dark Theme** — Modern dark UI with yellow accents
+- **OCR** — PaddleOCR integration for extracting plate text (via Awiros backend)
+- **Live Log** — Real-time detection log with deduplication, watchlist matching, and alerts
+- **User Interface** — Modern light UI with professional card-based components and multi-threaded video overlay
+- **Role-Based Access Control** — Secure user authentication with SQLite database
 
 ## Tech Stack
 
 - **PyQt6** — GUI framework
-- **OpenCV** — Camera capture
-- **ultralyticsplus** — YOLOv8 detection model (`keremberke/yolov8n-license-plate-detection`)
-- **pytesseract** — OCR engine (requires Tesseract binary)
+- **OpenCV** — Camera capture, proxy-resolution inference, image processing
+- **ultralytics** — YOLOv8 detection model (`keremberke/yolov8n-license-plate-detection`)
+- **PaddleOCR** — Deep learning framework for OCR
+- **SQLAlchemy** — Database ORM for user management and watchlist system
 
 ## Folder Structure
 
 ```
-ocr_app/
+ANPR_New-GUI/
 ├── main.py                 # Application entry point
 ├── requirements.txt        # Python dependencies
-├── tesseract/
-│   └── tesseract.exe      # Tesseract OCR binary
 ├── app/
 │   ├── __init__.py
-│   ├── ui/
-│   │   ├── main_window.py  # Main window with sidebar navigation
-│   │   ├── sidebar.py      # Navigation sidebar
-│   │   └── styles.py       # Dark theme stylesheet
-│   ├── camera/
-│   │   ├── camera_page.py   # Camera management UI
-│   │   ├── camera_worker.py # Background thread for camera capture
-│   │   └── camera_tile.py   # Individual camera feed widget
-│   ├── detection/
-│   │   ├── detection_page.py  # Detection page with feed + log
-│   │   └── plate_pipeline.py  # YOLOv8 + OCR processing thread
-│   └── utils/
-│       └── log_panel.py    # Detection log widget
+│   ├── camera/             # Camera management and background capture thread
+│   ├── detection/          # YOLOv8 + PaddleOCR processing and overlay rendering
+│   ├── services/           # Application state and runtime services
+│   ├── storage/            # SQLite database, auth session, storage path config
+│   ├── ui/                 # Main window, pages, login, dark/light theme styles
+│   └── utils/              # Log panel and helper components
 ```
 
 ## Requirements
 
 - Python 3.9+
-- Tesseract OCR binary bundled in `tesseract/` folder
 
-Install dependencies:
+### Setup Dependencies
 
-```bash
-pip install -r requirements.txt
-```
+1. **Install python packages**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **PaddleOCR Source**:
+   The Awiros backend requires the official PaddleOCR repository to be cloned in the parent directory of this project.
+   ```bash
+   cd ..
+   git clone https://github.com/PaddlePaddle/PaddleOCR.git
+   ```
 
 ## Usage
 
@@ -63,18 +63,17 @@ python main.py
 
 | Page | Description |
 |------|-------------|
-| Dashboard | System overview, quick process, drop zone |
-| Cameras | Add/remove camera feeds |
-| Detection | Live YOLOv8 + OCR on selected camera |
-| OCR | (Placeholder) |
-| Pipeline | (Placeholder) |
-| History | (Placeholder) |
-| Settings | (Placeholder) |
-| About | (Placeholder) |
+| Dashboard | System overview, active alerts, quick metrics |
+| Cameras | Add, edit or remove camera feeds |
+| Live Feed | Multi-threaded live YOLOv8 + OCR inference on active cameras |
+| Watchlist | Threat-level management mapped to SQLite database |
+| History | Past detection logs and records |
+| Settings | System configuration (confidence threshold, proxy-resolution, storage) |
+| About | Information about the software |
 
 ## Configuration
 
-- Detection confidence threshold: `0.4` (in `app/detection/plate_pipeline.py`)
-- Model: `keremberke/yolov8n-license-plate-detection`
-- OCR whitelist: Alphanumeric only
-- Tesseract path: `tesseract/tesseract.exe` (relative to project root)
+- **Detection Confidence Threshold**: Configurable via the Settings UI (default typically `0.4`)
+- **Proxy-Resolution Inference**: Downsamples frames for detection to improve FPS. Configurable in Settings.
+- **Model used**: `keremberke/yolov8n-license-plate-detection`
+- **OCR Engine**: Propelled by PaddlePaddle backend using Awiros configs.
