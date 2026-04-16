@@ -106,6 +106,9 @@ class PreviewLabel(QLabel):
         self._qpixmap = None
 
     def set_image(self, pixmap: QPixmap):
+        if pixmap.isNull():
+            self.clear_image("Snapshot unavailable")
+            return
         self._qpixmap = pixmap
         self.setText("")
         self.update()
@@ -117,7 +120,7 @@ class PreviewLabel(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._qpixmap:
+        if self._qpixmap is not None and not self._qpixmap.isNull():
             painter = QPainter(self)
             scaled = self._qpixmap.scaled(
                 self.size(),
@@ -348,7 +351,10 @@ class DashboardPage(QWidget):
         self._hero_labels["source"].setText(str(match["source"]))
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
-            self._preview.set_image(pixmap)
+            if pixmap.isNull():
+                self._preview.clear_image("Snapshot unavailable")
+            else:
+                self._preview.set_image(pixmap)
         else:
             self._preview.clear_image("Snapshot unavailable")
 
@@ -680,14 +686,18 @@ class HistoryPage(QWidget):
                 self._sequence_table.setItem(row_index, column, item)
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
-            self._preview.setPixmap(
-                pixmap.scaled(
-                    self._preview.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+            if pixmap.isNull():
+                self._preview.setPixmap(QPixmap())
+                self._preview.setText("Snapshot unavailable")
+            else:
+                self._preview.setPixmap(
+                    pixmap.scaled(
+                        self._preview.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
                 )
-            )
-            self._preview.setText("")
+                self._preview.setText("")
         else:
             self._preview.setPixmap(QPixmap())
             self._preview.setText("Snapshot unavailable")
@@ -801,14 +811,18 @@ class HistoryPage(QWidget):
         snapshot_path = Path(str(entry.get("snapshot_path") or ""))
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
-            self._preview.setPixmap(
-                pixmap.scaled(
-                    self._preview.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+            if pixmap.isNull():
+                self._preview.setPixmap(QPixmap())
+                self._preview.setText("Snapshot unavailable")
+            else:
+                self._preview.setPixmap(
+                    pixmap.scaled(
+                        self._preview.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
                 )
-            )
-            self._preview.setText("")
+                self._preview.setText("")
 
     def _toggle_flag(self):
         match = self._selected_match()

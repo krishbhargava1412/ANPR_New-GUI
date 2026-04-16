@@ -210,21 +210,27 @@ def sys_prefix_site_packages() -> str:
 
 
 def _preferred_paddle_device() -> str:
-    if os.name == "nt":
-        try:
-            from importlib import metadata
-
-            metadata.version("paddlepaddle-gpu")
-            return "gpu:0"
-        except Exception:
-            return "cpu"
     try:
         _prepare_paddle_windows_runtime()
         import paddle
 
         if paddle.is_compiled_with_cuda():
             return "gpu:0"
+        try:
+            current_device = paddle.device.get_device()
+            if isinstance(current_device, str) and current_device.lower().startswith("gpu"):
+                return "gpu:0"
+        except Exception:
+            pass
     except Exception:
+        if os.name == "nt":
+            try:
+                from importlib import metadata
+
+                metadata.version("paddlepaddle-gpu")
+                return "gpu:0"
+            except Exception:
+                return "cpu"
         return "cpu"
     return "cpu"
 
