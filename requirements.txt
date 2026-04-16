@@ -1,15 +1,20 @@
+# ── Core UI & Vision ─────────────────────────────────────
 PyQt6>=6.6.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
+
+# ── OCR (PaddlePaddle CPU) ───────────────────────────────
 paddlepaddle==3.3.1
-paddlepaddle-gpu==3.3.1
 paddleocr==3.4.0
 PyYAML>=6.0.0
 safetensors>=0.4.0
+
+# ── YOLO Detection (PyTorch CPU) ────────────────────────
 torch==2.11.0
-torch==2.11.0+cu128
 ultralytics==8.4.37
+
+# ── Storage & Security ───────────────────────────────────
 SQLAlchemy>=2.0.0
 cryptography>=41.0.0
 platformdirs>=4.0.0
