@@ -41,6 +41,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "save_snapshots": True,
     "watchlist_alerts_enabled": True,
     "sound_alerts_enabled": True,
+    "proxy_resolution_enabled": True,
     "camera_indices": "",
     "default_camera": -1,
     "auto_start_cameras": False,

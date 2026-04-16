@@ -22,6 +22,7 @@ import numpy as np
 
 from PyQt6.QtCore import QSize, Qt, pyqtSlot
 from PyQt6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -176,19 +177,45 @@ class FeedWidget(QLabel):
         self._entries.clear()
 
     def update_frame(self, frame: np.ndarray):
+        if hasattr(self, '_last_rendered_qimage'):
+            self._last_rendered_qimage = None
         self._entries = [
-            entry
-            for entry in self._entries
+            entry for entry in self._entries
             if not entry.is_expired(self._SCANNING_TTL_SEC, self._CONFIRMED_TTL_SEC)
         ]
         annotated = self._draw(frame)
         self._last_rendered_frame = annotated
-        self.setPixmap(_frame_to_pixmap(annotated, self.size()))
+        self.update()
 
-    def resizeEvent(self, event):
-        if self._last_rendered_frame is not None:
-            self.setPixmap(_frame_to_pixmap(self._last_rendered_frame, self.size()))
-        super().resizeEvent(event)
+    def set_async_image(self, image: QImage):
+        self._last_rendered_qimage = image
+        self._last_rendered_frame = None
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        qimg = getattr(self, '_last_rendered_qimage', None)
+        frame = self._last_rendered_frame
+
+        pixmap = None
+        if qimg is not None:
+            pixmap = QPixmap.fromImage(qimg)
+        elif frame is not None:
+            h, w, ch = frame.shape
+            bytes_per_line = ch * w
+            qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_BGR888)
+            pixmap = QPixmap.fromImage(qt_img)
+
+        if pixmap is not None:
+            scaled = pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
 
     def _draw(self, frame: np.ndarray) -> np.ndarray:
         if not self._entries:
@@ -268,8 +295,19 @@ class DetectionPage(QWidget):
         self._record_camera: int | None = None
         self._record_writer: cv2.VideoWriter | None = None
         self._selected_stream_result: PlateResult | None = None
+        
+        from app.detection.overlay_renderer import OverlayRenderer
+        self._overlay_renderer = OverlayRenderer(self)
+        self._overlay_renderer.rendered.connect(self._on_renderer_complete)
+        self._overlay_renderer.start()
+        
         self._build_ui()
         self._bind_shortcuts()
+
+    @pyqtSlot(int, QImage)
+    def _on_renderer_complete(self, camera_index: int, image: QImage):
+        if self._grid_mode == 1 and camera_index == self._active_camera:
+            self._feed.set_async_image(image)
 
     def _build_ui(self):
         outer_layout = QVBoxLayout(self)
@@ -706,7 +744,11 @@ class DetectionPage(QWidget):
             self._alert_queue.append(result)
             settings = load_ui_settings()
             if bool(settings.get("sound_alerts_enabled", True)):
-                QApplication.beep()
+                try:
+                    import winsound
+                    winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                except Exception:
+                    QApplication.beep()
             self._update_alert_banner_ui()
         else:
             self._update_alert_banner_ui(f"LIVE TRACK | {result.text} | {result.source or f'CAM {result.camera_index}'} | click stream rows to jump")
@@ -789,7 +831,13 @@ class DetectionPage(QWidget):
             self._camera_fps[camera_index] = (current * 0.7) + (inst_fps * 0.3)
         self._camera_last_frame_ts[camera_index] = now
         self._latest_frames[camera_index] = frame.copy()
-        if camera_index == self._active_camera or self._grid_mode > 1:
+        if camera_index == self._active_camera and self._grid_mode == 1:
+            boxes = self._last_boxes.get(camera_index, [])
+            results = self._last_results.get(camera_index, [])
+            label = self._source_labels.get(camera_index, f"CAM {camera_index}")
+            self._overlay_renderer.enqueue(camera_index, frame, boxes, results, label)
+            self._update_meta_cards()
+        elif self._grid_mode > 1:
             self._refresh_feed()
             self._update_meta_cards()
             if self._recording and self._record_camera == camera_index and self._record_writer:
@@ -834,6 +882,10 @@ class DetectionPage(QWidget):
         self._set_pipeline_pause(self._paused)
         self._pause_btn.setText("RESUME" if self._paused else "PAUSE")
         self._update_status_text()
+    def teardown(self):
+        self.stop_detection()
+        if hasattr(self, '_overlay_renderer'):
+            self._overlay_renderer.stop()
 
     def start_detection(self):
         if not self._running and len(self._registered_cameras) > 0:

@@ -10,18 +10,17 @@ warnings.filterwarnings("ignore", category=UserWarning, module="paddle")
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 
-from app.storage import init_storage
-from app.storage.database import init_db
-from app.services.app_runtime import load_ui_settings
-from app.ui.main_window import MainWindow
-from app.ui.theme import generate_stylesheet, Theme
-
-
 def main():
+    app = QApplication(sys.argv)
+    
+    from app.storage import init_storage
+    from app.storage.database import init_db
+    from app.services.app_runtime import load_ui_settings
+    from app.ui.main_window import MainWindow
+    from app.ui.theme import generate_stylesheet, Theme
+    
     init_storage()
     init_db()
-    
-    app = QApplication(sys.argv)
     
     # Load and apply saved theme
     settings = load_ui_settings()

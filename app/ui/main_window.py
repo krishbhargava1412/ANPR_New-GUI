@@ -317,6 +317,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self._sidebar.set_user_info("Not signed in", "Guest", "")
+        self._sidebar.enforce_rbac(is_admin())
 
     def _show_sidebar_user_menu(self, button):
         if self._user_menu is None:
@@ -359,4 +360,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         for worker in self._camera_workers.values():
             worker.stop()
+        if hasattr(self, '_detection_page'):
+            self._detection_page.teardown()
         super().closeEvent(event)

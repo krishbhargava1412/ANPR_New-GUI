@@ -162,6 +162,10 @@ class Sidebar(QWidget):
         detail = f"{role_text}  |  @{username}" if username.strip() else role_text
         self._user_role_label.setText(detail)
 
+    def enforce_rbac(self, is_admin: bool):
+        if "settings" in self._buttons:
+            self._buttons["settings"].setVisible(is_admin)
+
     def apply_responsive_layout(self, breakpoint: str, window_width: int):
         if breakpoint == "small":
             self.setFixedWidth(168)

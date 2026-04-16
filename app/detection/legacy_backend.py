@@ -625,10 +625,25 @@ def read_license_plate(license_plate_crop):
     return None, None
 
 
-def detect_plates_in_frame(model, frame, confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD) -> list[dict[str, object]]:
+def detect_plates_in_frame(
+    model, 
+    frame, 
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    proxy_resolution_enabled: bool = True
+) -> list[dict[str, object]]:
     detections: list[dict[str, object]] = []
+    
+    orig_h, orig_w = frame.shape[:2]
+    scale_ratio = 1.0
+    inference_frame = frame
+
+    if proxy_resolution_enabled and orig_w > 640:
+        scale_ratio = 640.0 / orig_w
+        target_h = int(orig_h * scale_ratio)
+        inference_frame = cv2.resize(frame, (640, target_h))
+        
     try:
-        predictions = model.predict(frame, conf=confidence_threshold, verbose=False)
+        predictions = model.predict(inference_frame, conf=confidence_threshold, verbose=False)
         boxes = predictions[0].boxes
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Model inference failed on frame: %s", exc)
@@ -638,9 +653,18 @@ def detect_plates_in_frame(model, frame, confidence_threshold: float = DEFAULT_C
         if conf < confidence_threshold:
             continue
         cls_id = int(box.cls[0])
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        
+        # Scale bounding box back to original coordinates
+        x1_inf, y1_inf, x2_inf, y2_inf = map(int, box.xyxy[0])
+        x1 = max(0, int(x1_inf / scale_ratio))
+        y1 = max(0, int(y1_inf / scale_ratio))
+        x2 = min(orig_w, int(x2_inf / scale_ratio))
+        y2 = min(orig_h, int(y2_inf / scale_ratio))
+        
         if x2 <= x1 or y2 <= y1:
             continue
+            
+        # Extract high-resolution crop from the original un-scaled frame
         plate_crop = frame[y1:y2, x1:x2].copy()
         try:
             plate_text, ocr_score = read_license_plate(plate_crop)
@@ -740,7 +764,12 @@ def load_watchlist() -> set[str]:
 
 
 def is_watchlist_hit(plate_number: str) -> bool:
-    return plate_number.upper() in load_watchlist()
+    try:
+        from app.storage.database import is_watchlist_hit as db_watchlist_hit
+        return db_watchlist_hit(plate_number)
+    except Exception:
+        # Fallback to file reading if DB is unavailable
+        return plate_number.upper() in load_watchlist()
 
 
 def append_plate_log(

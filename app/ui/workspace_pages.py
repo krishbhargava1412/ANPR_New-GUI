@@ -6,9 +6,10 @@ from pathlib import Path
 import cv2
 
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
-from PyQt6.QtGui import QColor, QPixmap
+from PyQt6.QtGui import QColor, QPixmap, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -98,6 +99,35 @@ def _stat_card_widget(label: str) -> tuple[QWidget, QLabel]:
     return card, value_label
 
 
+class PreviewLabel(QLabel):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._qpixmap = None
+
+    def set_image(self, pixmap: QPixmap):
+        self._qpixmap = pixmap
+        self.setText("")
+        self.update()
+        
+    def clear_image(self, text):
+        self._qpixmap = None
+        self.setText(text)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._qpixmap:
+            painter = QPainter(self)
+            scaled = self._qpixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+
 class DashboardPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -176,9 +206,8 @@ class DashboardPage(QWidget):
         evidence_title.setObjectName("panelTitle")
         evidence_layout.addWidget(evidence_title)
 
-        self._preview = QLabel("No recent evidence")
+        self._preview = PreviewLabel("No recent evidence")
         self._preview.setObjectName("dropZone")
-        self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumHeight(320)
         evidence_layout.addWidget(self._preview)
 
@@ -285,8 +314,7 @@ class DashboardPage(QWidget):
             self._recent_table.selectRow(0)
             self._populate_latest_detection(matches[0])
         else:
-            self._preview.setPixmap(QPixmap())
-            self._preview.setText("No recent evidence")
+            self._preview.clear_image("No recent evidence")
             for label in self._hero_labels.values():
                 label.setText("--")
 
@@ -320,17 +348,9 @@ class DashboardPage(QWidget):
         self._hero_labels["source"].setText(str(match["source"]))
         if snapshot_path.exists():
             pixmap = QPixmap(str(snapshot_path))
-            self._preview.setPixmap(
-                pixmap.scaled(
-                    self._preview.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-            self._preview.setText("")
+            self._preview.set_image(pixmap)
         else:
-            self._preview.setPixmap(QPixmap())
-            self._preview.setText("Snapshot unavailable")
+            self._preview.clear_image("Snapshot unavailable")
 
     def apply_responsive_layout(self, breakpoint: str, window_width: int):
         margins = {
@@ -1032,6 +1052,10 @@ class SettingsPage(QWidget):
                     ("Confidence Threshold", self._create_confidence_slider()),
                     ("Frame Skip", self._create_frame_skip_slider()),
                     ("Model Selector", self._create_model_selector()),
+                    ("Proxy Resolution", self._create_checkbox(
+                        "Optimize Inference Performance (Downsample feed to 640p locally for YOLO detector mapping)",
+                        "proxy_resolution_enabled",
+                    )),
                 ],
             )
         )
@@ -1377,6 +1401,7 @@ class SettingsPage(QWidget):
             bool(settings.get("watchlist_alerts_enabled", True))
         )
         self._sound_alerts.setChecked(bool(settings.get("sound_alerts_enabled", True)))
+        self._proxy_resolution_enabled.setChecked(bool(settings.get("proxy_resolution_enabled", True)))
 
         indices = settings.get("camera_indices", "")
         self._camera_indices.setText(indices)
@@ -1419,6 +1444,7 @@ class SettingsPage(QWidget):
                 "save_snapshots": bool(self._save_snapshots.isChecked()),
                 "watchlist_alerts_enabled": bool(self._watchlist_alerts.isChecked()),
                 "sound_alerts_enabled": bool(self._sound_alerts.isChecked()),
+                "proxy_resolution_enabled": bool(self._proxy_resolution_enabled.isChecked()),
                 "camera_indices": self._camera_indices.text().strip(),
                 "ip_camera_urls": self._ip_camera_urls.toPlainText().strip(),
                 "default_camera": int(self._default_camera.value()),
@@ -1633,19 +1659,7 @@ class UserManagementPage(QWidget):
         self._refresh_users()
 
     def _build_ui(self):
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer_layout.addWidget(scroll)
-
-        content = QWidget()
-        scroll.setWidget(content)
-
-        layout = QVBoxLayout(content)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 36, 36, 24)
         layout.setSpacing(20)
         self._root_layout = layout
@@ -1653,44 +1667,16 @@ class UserManagementPage(QWidget):
             _page_header("User Management", "Manage system users and roles")
         )
 
-        self._user_table = QTableWidget()
-        self._user_table.setColumnCount(6)
-        self._user_table.setHorizontalHeaderLabels(
-            ["ID", "Username", "Full Name", "Role", "Created At", "Last Login"]
-        )
-        self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        layout.addWidget(self._user_table)
-
-        form_layout = QFormLayout()
-        form_layout.setSpacing(12)
-
-        self._new_username = QLineEdit()
-        self._new_username.setPlaceholderText("Username")
-        self._new_full_name = QLineEdit()
-        self._new_full_name.setPlaceholderText("Full Name")
-        self._new_password = QLineEdit()
-        self._new_password.setPlaceholderText("Password")
-        self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_role = QComboBox()
-        self._new_role.addItems(AVAILABLE_USER_ROLES)
-        self._new_role.setCurrentText("gate keeper")
-
-        form_layout.addRow("Username:", self._new_username)
-        form_layout.addRow("Full Name:", self._new_full_name)
-        form_layout.addRow("Password:", self._new_password)
-        form_layout.addRow("Role:", self._new_role)
-
         btn_layout = QHBoxLayout()
-        self._add_btn = QPushButton("Add User")
+        self._add_btn = QPushButton("ADD USER")
         self._add_btn.setObjectName("primaryButton")
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.clicked.connect(self._on_add_user)
-        self._delete_btn = QPushButton("Delete Selected")
+        self._delete_btn = QPushButton("DELETE SELECTED")
         self._delete_btn.setObjectName("dangerButton")
         self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_btn.clicked.connect(self._on_delete_user)
-        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn = QPushButton("REFRESH")
         self._refresh_btn.setObjectName("secondaryButton")
         self._refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._refresh_btn.clicked.connect(self._refresh_users)
@@ -1700,8 +1686,32 @@ class UserManagementPage(QWidget):
         btn_layout.addWidget(self._refresh_btn)
         btn_layout.addStretch()
 
-        layout.addLayout(form_layout)
         layout.addLayout(btn_layout)
+
+        table_card = QFrame()
+        table_card.setObjectName("statCard")
+        try:
+            from app.ui.theme import apply_drop_shadow
+            from app.services.app_runtime import load_ui_settings
+            apply_drop_shadow(table_card, load_ui_settings().get("theme", "dark"))
+        except Exception:
+            pass
+
+        table_layout = QVBoxLayout(table_card)
+        table_layout.setContentsMargins(12, 12, 12, 12)
+
+        self._user_table = QTableWidget()
+        self._user_table.setColumnCount(6)
+        self._user_table.setHorizontalHeaderLabels(
+            ["ID", "Username", "Full Name", "Role", "Created At", "Last Login"]
+        )
+        self._user_table.horizontalHeader().setStretchLastSection(True)
+        self._user_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._user_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._user_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table_layout.addWidget(self._user_table)
+        
+        layout.addWidget(table_card, stretch=1)
         self.apply_responsive_layout("medium", 1366)
 
     def _refresh_users(self):
@@ -1736,35 +1746,68 @@ class UserManagementPage(QWidget):
             )
 
     def _on_add_user(self):
-        from app.storage.database import create_user
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add User")
+        dialog.setModal(True)
+        dialog.setFixedSize(360, 260)
+        
+        layout = QVBoxLayout(dialog)
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+        
+        username_input = QLineEdit()
+        username_input.setPlaceholderText("Username")
+        full_name_input = QLineEdit()
+        full_name_input.setPlaceholderText("Full Name")
+        password_input = QLineEdit()
+        password_input.setPlaceholderText("Password")
+        password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        role_combo = QComboBox()
+        role_combo.addItems(AVAILABLE_USER_ROLES)
+        role_combo.setCurrentText("gate keeper")
 
-        username = self._new_username.text().strip()
-        full_name = self._new_full_name.text().strip()
-        password = self._new_password.text()
-        role = self._new_role.currentText().strip().lower()
+        form_layout.addRow("Username:", username_input)
+        form_layout.addRow("Full Name:", full_name_input)
+        form_layout.addRow("Password:", password_input)
+        form_layout.addRow("Role:", role_combo)
+        
+        layout.addLayout(form_layout)
+        
+        btn_layout = QHBoxLayout()
+        cancel_btn = QPushButton("CANCEL")
+        cancel_btn.setObjectName("secondaryButton")
+        cancel_btn.clicked.connect(dialog.reject)
+        create_btn = QPushButton("CREATE")
+        create_btn.setObjectName("primaryButton")
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        def attempt_create():
+            from app.storage.database import create_user
+            username = username_input.text().strip()
+            full_name = full_name_input.text().strip()
+            password = password_input.text()
+            role = role_combo.currentText().strip().lower()
 
-        if not username or not full_name or not password:
-            QMessageBox.warning(self, "Error", "Username, full name and password are required")
-            return
+            if not username or not full_name or not password:
+                QMessageBox.warning(dialog, "Error", "Username, full name and password are required")
+                return
+            if role not in AVAILABLE_USER_ROLES:
+                QMessageBox.warning(dialog, "Error", "Select a valid role")
+                return
 
-        if role not in AVAILABLE_USER_ROLES:
-            QMessageBox.warning(self, "Error", "Select a valid role")
-            return
+            user = create_user(username, password, role, full_name=full_name)
+            if user:
+                QMessageBox.information(self, "Success", f"User '{username}' created successfully")
+                dialog.accept()
+                self._refresh_users()
+            else:
+                QMessageBox.warning(dialog, "Error", "Failed to create user. Username may already exist.")
 
-        user = create_user(username, password, role, full_name=full_name)
-        if user:
-            QMessageBox.information(
-                self, "Success", f"User '{username}' created successfully"
-            )
-            self._new_username.clear()
-            self._new_full_name.clear()
-            self._new_password.clear()
-            self._new_role.setCurrentText("gate keeper")
-            self._refresh_users()
-        else:
-            QMessageBox.warning(
-                self, "Error", "Failed to create user. Username may already exist."
-            )
+        create_btn.clicked.connect(attempt_create)
+        dialog.exec()
 
     def _on_delete_user(self):
         from app.storage.database import delete_user
@@ -1843,9 +1886,15 @@ class WatchlistPage(QWidget):
         self._plate_input.setMinimumWidth(200)
         toolbar.addWidget(self._plate_input)
         
+        self._threat_combo = QComboBox()
+        self._threat_combo.addItems(["INFO", "YELLOW", "RED"])
+        self._threat_combo.setCurrentText("INFO")
+        self._threat_combo.setToolTip("Select Threat Level")
+        toolbar.addWidget(self._threat_combo)
+
         self._notes_input = QLineEdit()
-        self._notes_input.setPlaceholderText("Notes / Threat Level")
-        self._notes_input.setMinimumWidth(200)
+        self._notes_input.setPlaceholderText("Additional Notes")
+        self._notes_input.setMinimumWidth(150)
         toolbar.addWidget(self._notes_input)
 
         add_btn = QPushButton("ADD PLATE")
@@ -1911,7 +1960,11 @@ class WatchlistPage(QWidget):
         user = get_current_user()
         uid = user["id"] if user else 1
         
-        if add_watchlist_plate(plate, uid, self._notes_input.text().strip()):
+        threat_lvl = self._threat_combo.currentText()
+        notes = self._notes_input.text().strip()
+        combined_notes = f"[{threat_lvl}] {notes}" if notes else f"[{threat_lvl}]"
+        
+        if add_watchlist_plate(plate, uid, combined_notes):
             self._plate_input.clear()
             self._notes_input.clear()
             self.refresh()

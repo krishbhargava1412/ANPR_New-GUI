@@ -337,7 +337,7 @@ def show_change_password_dialog(parent=None) -> bool:
     dialog = QDialog(parent)
     dialog.setWindowTitle("Change Password")
     dialog.setModal(True)
-    dialog.setFixedSize(350, 200)
+    dialog.setFixedSize(360, 260)
 
     layout = QVBoxLayout(dialog)
     layout.setSpacing(12)
