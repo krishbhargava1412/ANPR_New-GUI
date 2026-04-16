@@ -563,12 +563,17 @@ def dependency_status() -> dict[str, str]:
                 if paddle.is_compiled_with_cuda():
                     ocr_device = "CUDA"
                 else:
-                    ocr_device = "CPU"
+                    current_device = paddle.device.get_device()
+                    ocr_device = (
+                        "CUDA"
+                        if isinstance(current_device, str)
+                        and current_device.lower().startswith("gpu")
+                        else "CPU"
+                    )
             except Exception:
                 ocr_device = "CPU"
             paddle_message = f"paddle {paddle.__version__}"
-            if ocr_device == "CPU":
-                paddle_message += " (CPU build)"
+            paddle_message += " (CUDA build)" if ocr_device == "CUDA" else " (CPU build)"
         except Exception as exc:
             ocr_device = "GPU" if "gpu" in current_runtime_devices().get("ocr", "") else "CPU"
             try:

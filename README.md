@@ -46,6 +46,11 @@ ANPR_New-GUI/
    pip install -r requirements.txt
    ```
 
+   For an NVIDIA GPU setup, install the CUDA profile instead:
+   ```bash
+   pip install -r requirements-gpu.txt
+   ```
+
 2. **PaddleOCR Source**:
    The Awiros backend requires the official PaddleOCR repository to be cloned in the parent directory of this project.
    ```bash
