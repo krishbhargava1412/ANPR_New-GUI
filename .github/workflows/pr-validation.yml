@@ -1,0 +1,35 @@
+name: PR Validation Pipeline
+
+on:
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.9"
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Installing standard requirements (CPU versions) for CI validation
+        pip install -r requirements.txt
+
+    - name: Check Python Syntax
+      run: |
+        # This will catch any syntax errors in the Python files
+        python -m compileall -q .
+
+    - name: Verify Core Imports
+      run: |
+        # Quick sanity check to ensure core libraries load successfully
+        python -c "import PyQt6; import cv2; import numpy; import sqlalchemy; import torch; import paddle"
