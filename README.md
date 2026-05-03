@@ -51,12 +51,8 @@ ANPR_New-GUI/
    pip install -r requirements-gpu.txt
    ```
 
-2. **PaddleOCR Source**:
-   The Awiros backend requires the official PaddleOCR repository to be cloned in the parent directory of this project.
-   ```bash
-   cd ..
-   git clone https://github.com/PaddlePaddle/PaddleOCR.git
-   ```
+2. **PaddleOCR Module**:
+   The `ppocr` module is already vendored directly into the `app/detection` folder, making the repository completely self-contained. No external cloning is required.
 
 ## Usage
 
