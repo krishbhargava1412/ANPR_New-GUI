@@ -58,6 +58,8 @@ class MainWindow(QMainWindow):
         self._initialize_runtime()
         self._camera_workers: dict[int, CameraWorker] = {}
         self._apply_saved_camera_config(load_ui_settings())
+        self._force_quit = False
+        self._setup_system_tray()
         self._check_authentication()
 
     def _initialize_runtime(self):
@@ -353,11 +355,51 @@ class MainWindow(QMainWindow):
                 breakpoint, self.width()
             )
 
+    def _setup_system_tray(self):
+        from PyQt6.QtWidgets import QSystemTrayIcon, QStyle, QApplication, QMenu
+        self._tray_icon = QSystemTrayIcon(self)
+        
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self._tray_icon.setIcon(icon)
+        
+        tray_menu = QMenu()
+        restore_action = tray_menu.addAction("Restore")
+        restore_action.triggered.connect(self.showNormal)
+        
+        quit_action = tray_menu.addAction("Quit")
+        quit_action.triggered.connect(self._quit_application)
+        
+        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_icon.activated.connect(self._tray_icon_activated)
+        self._tray_icon.show()
+
+    def _tray_icon_activated(self, reason):
+        from PyQt6.QtWidgets import QSystemTrayIcon
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.showNormal()
+            self.activateWindow()
+
+    def _quit_application(self):
+        self._force_quit = True
+        self.close()
+
     def resizeEvent(self, event):
         self._apply_responsive_layouts()
         super().resizeEvent(event)
 
     def closeEvent(self, event):
+        if not getattr(self, '_force_quit', False):
+            event.ignore()
+            self.hide()
+            from PyQt6.QtWidgets import QSystemTrayIcon
+            self._tray_icon.showMessage(
+                "ANPR Command Center",
+                "Application minimized to tray. Background surveillance is still active.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000
+            )
+            return
+
         for worker in self._camera_workers.values():
             worker.stop()
         if hasattr(self, '_detection_page'):

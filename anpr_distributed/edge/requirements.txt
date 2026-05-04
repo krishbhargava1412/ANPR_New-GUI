@@ -1,0 +1,26 @@
+# ── ANPR Edge Node Dependencies (Jetson) ─────────────────────────────────────
+# Core Vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# YOLO Detection
+# NOTE: On Jetson, install torch from NVIDIA's PyPI index:
+#   pip install torch --index-url https://pypi.jetson-ai-lab.dev/jp6/cu126
+# Then: pip install ultralytics
+ultralytics>=8.4.0
+
+# OCR (PaddlePaddle)
+# NOTE: On Jetson, use NVIDIA's PaddlePaddle build:
+#   pip install paddlepaddle-gpu -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+paddleocr>=3.4.0
+PyYAML>=6.0.0
+safetensors>=0.4.0
+
+# Network (push to server)
+requests>=2.31.0
+
+# Data validation
+pydantic>=2.7.0
+
+# Utilities
+Pillow>=10.0.0

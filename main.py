@@ -9,8 +9,10 @@ warnings.filterwarnings("ignore", category=UserWarning, module="paddle")
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt
 
 def main():
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     
     from app.storage import init_storage
