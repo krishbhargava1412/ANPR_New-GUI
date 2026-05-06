@@ -1,5 +1,4 @@
-# ── Core UI & Vision ─────────────────────────────────────
-PyQt6>=6.6.0
+# ── Core Vision ───────────────────────────────────────────
 opencv-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
@@ -16,7 +15,15 @@ safetensors>=0.4.0
 torch==2.11.0+cu128
 ultralytics==8.4.37
 
-# ── Storage & Security ───────────────────────────────────
+# ── Database (PostgreSQL) ────────────────────────────────
 SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# ── Web Server ───────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.9
+
+# ── Security & Config ───────────────────────────────────
 cryptography>=41.0.0
-platformdirs>=4.0.0

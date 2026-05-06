@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import importlib.util
 import logging
 import os
@@ -20,16 +19,48 @@ import cv2
 import numpy as np
 
 from app.storage import (
-    get_snapshots_dir,
-    get_logs_dir,
-    get_watchlist_path,
-    get_plate_log_path,
     get_awiros_anpr_dir,
     get_awiros_model_dir,
     get_awiros_dict_path,
     get_model_path,
     ensure_storage_dirs,
 )
+
+def _prepare_paddle_windows_runtime() -> None:
+    if os.name != "nt":
+        return
+    nvidia_root = Path(sys_prefix_site_packages()) / "nvidia"
+    if not nvidia_root.exists():
+        return
+    for subdir in nvidia_root.iterdir():
+        if not subdir.is_dir():
+            continue
+        for folder_name in ("bin", "lib"):
+            candidate = subdir / folder_name
+            if not candidate.exists():
+                continue
+            try:
+                handle = os.add_dll_directory(str(candidate))
+            except (AttributeError, FileNotFoundError, OSError):
+                pass
+            current_path = os.environ.get("PATH", "")
+            if str(candidate) not in current_path:
+                os.environ["PATH"] = str(candidate) + os.pathsep + current_path
+
+def sys_prefix_site_packages() -> str:
+    import site
+    candidates = []
+    try:
+        candidates.extend(site.getsitepackages())
+    except Exception:
+        pass
+    user_site = getattr(site, "getusersitepackages", lambda: None)()
+    if user_site:
+        candidates.append(user_site)
+    for candidate in candidates:
+        if candidate and "site-packages" in candidate.lower() and Path(candidate).exists():
+            return candidate
+    return str(Path(__file__).resolve().parents[2] / ".venv" / "Lib" / "site-packages")
 
 
 LOGGER = logging.getLogger("anpr_new_gui.detection")
@@ -160,86 +191,11 @@ def _preferred_ocr_device() -> str:
     except Exception:
         return "cpu"
 
-
-def _prepare_paddle_windows_runtime() -> None:
-    if os.name != "nt":
-        return
-
-    nvidia_root = Path(sys_prefix_site_packages()) / "nvidia"
-    if not nvidia_root.exists():
-        return
-
-    for subdir in nvidia_root.iterdir():
-        if not subdir.is_dir():
-            continue
-        for folder_name in ("bin", "lib"):
-            candidate = subdir / folder_name
-            if not candidate.exists():
-                continue
-            try:
-                handle = os.add_dll_directory(str(candidate))
-                _paddle_dll_handles.append(handle)
-            except (AttributeError, FileNotFoundError, OSError):
-                pass
-            current_path = os.environ.get("PATH", "")
-            if str(candidate) not in current_path:
-                os.environ["PATH"] = str(candidate) + os.pathsep + current_path
-
-
-def sys_prefix_site_packages() -> str:
-    import site
-
-    candidates = []
-    try:
-        candidates.extend(site.getsitepackages())
-    except Exception:
-        pass
-    user_site = getattr(site, "getusersitepackages", lambda: None)()
-    if user_site:
-        candidates.append(user_site)
-    for candidate in candidates:
-        if (
-            candidate
-            and "site-packages" in candidate.lower()
-            and Path(candidate).exists()
-        ):
-            return candidate
-    return str(
-        Path(__file__).resolve().parents[2] / ".venv" / "Lib" / "site-packages"
-    )
-
-
 def _preferred_paddle_device() -> str:
-    try:
-        _prepare_paddle_windows_runtime()
-        import paddle
-
-        if paddle.is_compiled_with_cuda():
-            return "gpu:0"
-        try:
-            current_device = paddle.device.get_device()
-            if isinstance(current_device, str) and current_device.lower().startswith("gpu"):
-                return "gpu:0"
-        except Exception:
-            pass
-    except Exception:
-        if os.name == "nt":
-            try:
-                from importlib import metadata
-
-                metadata.version("paddlepaddle-gpu")
-                return "gpu:0"
-            except Exception:
-                return "cpu"
-        return "cpu"
-    return "cpu"
-
+    return "gpu:0"
 
 def _get_paddle_device() -> str:
-    try:
-        return _preferred_paddle_device()
-    except Exception:
-        return "cpu"
+    return _preferred_paddle_device()
 
 
 class AwirosAnprReader:
@@ -392,20 +348,12 @@ def _allowlist_ultralytics_model_classes() -> None:
 
 def _preferred_torch_device() -> str:
     import torch
-
-    if torch.cuda.is_available():
-        return "cuda:0"
-    mps = getattr(torch.backends, "mps", None)
-    if mps is not None and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
+    if not torch.cuda.is_available():
+        LOGGER.warning("CUDA is NOT available in PyTorch, but forcing GPU device 'cuda:0' as requested.")
+    return "cuda:0"
 
 def _get_safe_device() -> str:
-    try:
-        return _preferred_torch_device()
-    except Exception:
-        return "cpu"
+    return _preferred_torch_device()
 
 
 def current_runtime_devices() -> dict[str, str]:
@@ -475,7 +423,7 @@ class AwirosAnprProcessProxy:
             cwd=str(APP_ROOT),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=None,
             bufsize=0,
         )
 
@@ -725,52 +673,48 @@ class PlateVoteTracker:
             self._store.pop(key, None)
 
 
-def safe_stem(value: str) -> str:
-    stem = Path(value).stem if value else "output"
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
-    return cleaned or "output"
+def save_plate_snapshot(
+    plate_region,
+    plate_number: str,
+    source: str = "",
+) -> int | None:
+    """Encode plate region to PNG bytes and store in PostgreSQL.
 
-
-def next_snapshot_path(plate_number: str, source: str, timestamp: datetime | None = None) -> Path:
-    ensure_runtime_dirs()
-    stamp = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    return get_snapshots_dir() / f"{safe_stem(source)}_{safe_stem(plate_number)}_{stamp}.png"
-
-
-def save_plate_snapshot(plate_region, snapshot_path: Path) -> Path | None:
+    Returns the snapshot id, or None on failure.
+    """
     if plate_region is None or getattr(plate_region, "size", 0) == 0:
         return None
-    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(snapshot_path), plate_region)
-    return snapshot_path
+    try:
+        success, buf = cv2.imencode(".png", plate_region)
+        if not success:
+            return None
+        from app.storage.database import add_snapshot_blob
+
+        return add_snapshot_blob(
+            plate_number=plate_number,
+            image_data=buf.tobytes(),
+            source=source,
+            content_type="image/png",
+        )
+    except Exception as exc:
+        LOGGER.warning("Failed to save snapshot to DB: %s", exc)
+        return None
 
 
 def load_watchlist() -> set[str]:
-    global _watchlist_cache, _watchlist_mtime
-    ensure_runtime_dirs()
-    watchlist_path = get_watchlist_path()
+    """Load watchlist plate numbers from PostgreSQL."""
     try:
-        current_mtime = watchlist_path.stat().st_mtime
-    except OSError:
+        from app.storage.database import get_watchlist_plates
+
+        return get_watchlist_plates()
+    except Exception:
         return set()
-    if current_mtime == _watchlist_mtime:
-        return _watchlist_cache
-    _watchlist_mtime = current_mtime
-    _watchlist_cache = {
-        line.strip().upper()
-        for line in watchlist_path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    }
-    return _watchlist_cache
 
 
 def is_watchlist_hit(plate_number: str) -> bool:
-    try:
-        from app.storage.database import is_watchlist_hit as db_watchlist_hit
-        return db_watchlist_hit(plate_number)
-    except Exception:
-        # Fallback to file reading if DB is unavailable
-        return plate_number.upper() in load_watchlist()
+    from app.storage.database import is_watchlist_hit as db_watchlist_hit
+
+    return db_watchlist_hit(plate_number)
 
 
 def append_plate_log(
@@ -779,19 +723,17 @@ def append_plate_log(
     timestamp: datetime | None = None,
     source: str,
     confidence: float | None = None,
-    snapshot_path: Path | None = None,
+    snapshot_id: int | None = None,
     watchlist_hit: bool = False,
 ) -> None:
-    ensure_runtime_dirs()
-    now = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-    with open(get_plate_log_path(), mode="a", newline="", encoding="utf-8") as file:
-        csv.writer(file).writerow(
-            [
-                now,
-                plate_number,
-                source,
-                "" if confidence is None else f"{confidence:.4f}",
-                str(snapshot_path or ""),
-                "1" if watchlist_hit else "0",
-            ]
-        )
+    """Append a detection entry to PostgreSQL detection_log table."""
+    from app.storage.database import add_detection_log
+
+    add_detection_log(
+        plate_number=plate_number,
+        source=source,
+        confidence=confidence,
+        watchlist_hit=watchlist_hit,
+        snapshot_id=snapshot_id,
+        timestamp=timestamp,
+    )

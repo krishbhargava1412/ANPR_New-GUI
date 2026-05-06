@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ANPR Command Center — Real-time license plate recognition and surveillance dashboard">
+    <title>VISION — ANPR Command Center</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <!-- Login Overlay -->
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-card">
+            <h1 class="login-title">VISION</h1>
+            <p class="login-subtitle">ANPR Command Center</p>
+            <div class="login-form">
+                <input type="text" id="login-username" placeholder="Username" autocomplete="username">
+                <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+                <button id="login-btn" class="btn btn-primary btn-block">LOGIN</button>
+                <p id="login-error" class="login-error"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Shell -->
+    <div id="app-shell" class="app-shell hidden">
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <h2 class="sidebar-brand">VISION</h2>
+                <span class="sidebar-badge">ANPR</span>
+            </div>
+            <nav id="sidebar-nav" class="sidebar-nav"></nav>
+            <div class="sidebar-footer">
+                <div id="user-info" class="user-info"></div>
+                <button id="logout-btn" class="btn btn-ghost btn-sm">LOGOUT</button>
+            </div>
+        </aside>
+        <main id="content-area" class="content-area">
+            <div id="page-container" class="page-container"></div>
+        </main>
+    </div>
+
+    <!-- Alert Banner -->
+    <div id="alert-banner" class="alert-banner hidden">
+        <div class="alert-content">
+            <span class="alert-icon">⚠</span>
+            <span id="alert-text"></span>
+            <button id="alert-dismiss" class="btn btn-ghost btn-xs">DISMISS</button>
+        </div>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/ws.js"></script>
+    <script src="/js/auth.js"></script>
+    <script src="/js/router.js"></script>
+    <script src="/js/components/sidebar.js"></script>
+    <script src="/js/components/stat_card.js"></script>
+    <script src="/js/components/alert_banner.js"></script>
+    <script src="/js/components/data_table.js"></script>
+    <script src="/js/components/feed_canvas.js"></script>
+    <script src="/js/pages/dashboard.js"></script>
+    <script src="/js/pages/detection.js"></script>
+    <script src="/js/pages/history.js"></script>
+    <script src="/js/pages/watchlist.js"></script>
+    <script src="/js/pages/settings.js"></script>
+    <script src="/js/pages/about.js"></script>
+    <script src="/js/pages/users.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

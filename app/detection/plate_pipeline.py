@@ -1,11 +1,14 @@
+"""Detection pipeline — stdlib threading version (replaces QThread)."""
+
 from __future__ import annotations
 
 import dataclasses
 import time
 import traceback
+from threading import Lock, Thread
+from typing import Callable, Optional
 
 import numpy as np
-from PyQt6.QtCore import QMutex, QMutexLocker, QThread, pyqtSignal
 
 from app.detection.legacy_backend import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -29,7 +32,7 @@ class PlateResult:
     bbox: tuple[int, int, int, int]
     timestamp: float
     source: str = ""
-    snapshot_path: str = ""
+    snapshot_id: int | None = None
     watchlist_hit: bool = False
     plate_crop: np.ndarray | None = None
 
@@ -40,15 +43,17 @@ class DetectedBox:
     confidence: float
 
 
-class PlatePipeline(QThread):
-    boxes_detected = pyqtSignal(int, list)
-    result_ready = pyqtSignal(list)
-    status = pyqtSignal(str)
-    telemetry = pyqtSignal(int, dict)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._mutex = QMutex()
+class PlatePipeline(Thread):
+    def __init__(
+        self,
+        *,
+        on_boxes: Optional[Callable[[int, list[DetectedBox]], None]] = None,
+        on_results: Optional[Callable[[list[PlateResult]], None]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
+        on_telemetry: Optional[Callable[[int, dict], None]] = None,
+    ):
+        super().__init__(daemon=True, name="PlatePipeline")
+        self._lock = Lock()
         self._frame: np.ndarray | None = None
         self._camera_index: int = -1
         self._source_label = ""
@@ -60,33 +65,43 @@ class PlatePipeline(QThread):
         self._confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD
         self._proxy_resolution_enabled = True
 
+        # Callbacks (replace pyqtSignals)
+        self._on_boxes = on_boxes
+        self._on_results = on_results
+        self._on_status = on_status
+        self._on_telemetry = on_telemetry
+
     def submit_frame(self, camera_index: int, frame: np.ndarray, source_label: str = ""):
-        with QMutexLocker(self._mutex):
+        with self._lock:
             self._frame = frame.copy()
             self._camera_index = camera_index
             self._source_label = source_label or f"Camera {camera_index}"
 
     def configure(self, *, confidence_threshold: float | None = None, proxy_resolution_enabled: bool | None = None):
-        with QMutexLocker(self._mutex):
+        with self._lock:
             if confidence_threshold is not None:
                 self._confidence_threshold = float(confidence_threshold)
             if proxy_resolution_enabled is not None:
                 self._proxy_resolution_enabled = bool(proxy_resolution_enabled)
 
     def set_paused(self, paused: bool):
-        with QMutexLocker(self._mutex):
+        with self._lock:
             self._paused = paused
 
     def stop(self):
-        with QMutexLocker(self._mutex):
+        with self._lock:
             self._running = False
-        self.wait()
+        self.join(timeout=10)
+
+    def _emit_status(self, msg: str):
+        if self._on_status:
+            self._on_status(msg)
 
     def run(self):
-        with QMutexLocker(self._mutex):
+        with self._lock:
             self._running = True
 
-        self.status.emit("Loading detection runtime...")
+        self._emit_status("Loading detection runtime...")
         try:
             ensure_runtime_dirs()
             validate_detection_runtime()
@@ -97,16 +112,16 @@ class PlatePipeline(QThread):
             )
             self._model = get_plate_model()
             self._reader = get_reader()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             details = f"{type(exc).__name__}: {exc}".strip()
-            self.status.emit(f"Runtime load failed: {details}")
+            self._emit_status(f"Runtime load failed: {details}")
             traceback.print_exc()
             return
 
-        self.status.emit(f"Detection ready | model: {loaded_model_path()}")
+        self._emit_status(f"Detection ready | model: {loaded_model_path()}")
 
         while True:
-            with QMutexLocker(self._mutex):
+            with self._lock:
                 if not self._running:
                     break
                 paused = self._paused
@@ -116,16 +131,16 @@ class PlatePipeline(QThread):
                 self._frame = None
 
             if paused:
-                self.msleep(20)
+                time.sleep(0.02)
                 continue
             if frame is None:
-                self.msleep(20)
+                time.sleep(0.02)
                 continue
 
             try:
                 self._process_frame(frame, camera_index, source_label)
-            except Exception as exc:  # noqa: BLE001
-                self.status.emit(f"Pipeline error: {exc}")
+            except Exception as exc:
+                self._emit_status(f"Pipeline error: {exc}")
 
     def _process_frame(self, frame: np.ndarray, camera_index: int, source_label: str):
         started = time.perf_counter()
@@ -136,14 +151,16 @@ class PlatePipeline(QThread):
             proxy_resolution_enabled=self._proxy_resolution_enabled,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        self.telemetry.emit(
-            camera_index,
-            {
-                "latency_ms": elapsed_ms,
-                "box_count": len(detections),
-                "source": source_label or f"Camera {camera_index}",
-            },
-        )
+
+        if self._on_telemetry:
+            self._on_telemetry(
+                camera_index,
+                {
+                    "latency_ms": elapsed_ms,
+                    "box_count": len(detections),
+                    "source": source_label or f"Camera {camera_index}",
+                },
+            )
         if not detections:
             return
 
@@ -151,7 +168,8 @@ class PlatePipeline(QThread):
             DetectedBox(bbox=detection["bbox"], confidence=float(detection["confidence"]))
             for detection in detections
         ]
-        self.boxes_detected.emit(camera_index, boxes)
+        if self._on_boxes:
+            self._on_boxes(camera_index, boxes)
 
         source = source_label or f"Camera {camera_index}"
         results: list[PlateResult] = []
@@ -179,20 +197,22 @@ class PlatePipeline(QThread):
                     bbox=detection["bbox"],
                     timestamp=timestamp,
                     source=source,
-                    snapshot_path="",
+                    snapshot_id=None,
                     watchlist_hit=watchlist_hit,
                     plate_crop=detection.get("plate_crop"),
                 )
             )
 
         if results:
-            self.telemetry.emit(
-                camera_index,
-                {
-                    "latency_ms": elapsed_ms,
-                    "box_count": len(detections),
-                    "result_count": len(results),
-                    "source": source,
-                },
-            )
-            self.result_ready.emit(results)
+            if self._on_telemetry:
+                self._on_telemetry(
+                    camera_index,
+                    {
+                        "latency_ms": elapsed_ms,
+                        "box_count": len(detections),
+                        "result_count": len(results),
+                        "source": source,
+                    },
+                )
+            if self._on_results:
+                self._on_results(results)
