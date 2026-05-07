@@ -33,3 +33,5 @@ outputs/watchlist.txt
 
 # EasyOCR downloaded runtime assets
 assets/awiros_anpr
+
+.env
