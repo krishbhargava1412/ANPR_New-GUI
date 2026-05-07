@@ -9,6 +9,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
 from app.server.auth import LoginRequest, authenticate
 from app.server.api import dashboard, history, watchlist, settings, cameras, detection, users, about, snapshots
 from app.server.ws import feed_handler
@@ -93,6 +96,24 @@ def create_app() -> FastAPI:
 
     # ── WebSocket ──────────────────────────────────────
     app.include_router(feed_handler.router)
+
+    # ── Static Files (Frontend) ────────────────────────
+    # We mount this last so it doesn't catch API routes.
+    web_dir = Path(__file__).resolve().parent.parent / "web"
+    if web_dir.exists():
+        app.mount("/css", StaticFiles(directory=str(web_dir / "css")), name="css")
+        app.mount("/js", StaticFiles(directory=str(web_dir / "js")), name="js")
+        app.mount("/assets", StaticFiles(directory=str(Path(__file__).resolve().parent.parent.parent / "assets")), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            # If the path looks like a file (has an extension), but wasn't caught by the mounts, 
+            # it's probably a missing static asset.
+            if "." in full_path.split("/")[-1]:
+                return FileResponse(str(web_dir / "index.html")) # Or 404
+            
+            # For SPA, return index.html for any other route
+            return FileResponse(str(web_dir / "index.html"))
 
     return app
 

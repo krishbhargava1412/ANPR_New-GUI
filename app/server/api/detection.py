@@ -47,3 +47,12 @@ async def pause_detection(user: dict = Depends(get_current_user)):
     if dm:
         dm.toggle_pause()
     return {"status": "toggled"}
+
+
+@router.get("/share-sessions")
+async def get_share_sessions(user: dict = Depends(get_current_user)):
+    from app.server.main_server import get_detection_manager
+    dm = get_detection_manager()
+    if not dm:
+        return {"sessions": []}
+    return {"sessions": dm.list_active_share_sessions()}

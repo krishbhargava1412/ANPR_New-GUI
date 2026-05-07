@@ -1,7 +1,30 @@
 /** REST API client with JWT authentication. */
 const API = (() => {
+    const DEFAULT_BACKEND_URL = 'http://192.168.1.43:8000';
+
+    function normalizeBaseUrl(value) {
+        if (!value) return DEFAULT_BACKEND_URL;
+        try {
+            const url = new URL(value);
+            return url.origin;
+        } catch (_) {
+            return DEFAULT_BACKEND_URL;
+        }
+    }
+
     function getBaseUrl() {
-        return localStorage.getItem('anpr_backend_url') || 'http://192.168.1.43:8000';
+        const saved = localStorage.getItem('anpr_backend_url');
+        if (saved) return normalizeBaseUrl(saved);
+
+        if (window.location.protocol === 'file:') {
+            return DEFAULT_BACKEND_URL;
+        }
+
+        if (window.location.port && window.location.port !== '8000') {
+            return DEFAULT_BACKEND_URL;
+        }
+
+        return normalizeBaseUrl(window.location.origin);
     }
 
     function getToken() {
@@ -10,6 +33,10 @@ const API = (() => {
 
     function setToken(token) {
         localStorage.setItem('anpr_token', token);
+    }
+
+    function setBaseUrl(url) {
+        localStorage.setItem('anpr_backend_url', normalizeBaseUrl(url));
     }
 
     function clearToken() {
@@ -45,6 +72,6 @@ const API = (() => {
         post: (path, body) => request('POST', path, body),
         put: (path, body) => request('PUT', path, body),
         del: (path) => request('DELETE', path),
-        getToken, setToken, clearToken, getBaseUrl
+        getToken, setToken, clearToken, getBaseUrl, setBaseUrl
     };
 })();

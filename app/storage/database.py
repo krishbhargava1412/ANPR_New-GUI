@@ -19,8 +19,10 @@ from sqlalchemy import (
     Text,
     create_engine,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -162,10 +164,45 @@ class CaseFlag(Base):
     )
 
 
+class ShareSession(Base):
+    __tablename__ = "share_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    owner_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    camera_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str] = mapped_column(String(150), nullable=False)
+    socket_event: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_share_sessions_active", "is_shared"),
+        Index("idx_share_sessions_socket_event", "socket_event"),
+    )
+
+
 # ── Engine / Session ─────────────────────────────────────
 
 _engine = None
 _SessionLocal = None
+
+
+def _format_database_error(url: str, exc: Exception) -> RuntimeError:
+    message = (
+        "Database startup failed. PostgreSQL is not reachable at "
+        f"{url}. Start the database first with "
+        "`docker compose up -d postgres`, or update DATABASE_URL in .env "
+        "to a running PostgreSQL instance."
+    )
+    error = RuntimeError(message)
+    error.__cause__ = exc
+    return error
 
 
 def get_engine():
@@ -185,7 +222,12 @@ def get_session():
 
 def init_db() -> None:
     engine = get_engine()
-    Base.metadata.create_all(engine)
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        Base.metadata.create_all(engine)
+    except OperationalError as exc:
+        raise _format_database_error(get_database_url(), exc)
     create_default_admin()
 
 
@@ -737,5 +779,127 @@ def set_case_flag(
     except Exception as e:
         session.rollback()
         LOGGER.error("Failed to set case flag: %s", e)
+    finally:
+        session.close()
+
+
+def share_session_to_dict(row: ShareSession) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "owner_user_id": row.owner_user_id,
+        "owner_username": row.owner_username,
+        "camera_id": row.camera_id,
+        "label": row.label,
+        "socket_event": row.socket_event,
+        "isShared": row.is_shared,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+    }
+
+
+def create_share_session(
+    *,
+    owner_user_id: Optional[int],
+    owner_username: str,
+    camera_id: int,
+    label: str,
+    socket_event: str,
+) -> Optional[dict[str, Any]]:
+    session = get_session()
+    try:
+        existing = (
+            session.query(ShareSession)
+            .filter(
+                ShareSession.owner_username == owner_username,
+                ShareSession.camera_id == camera_id,
+                ShareSession.is_shared == True,
+            )
+            .first()
+        )
+        if existing:
+            existing.owner_user_id = owner_user_id
+            existing.label = label
+            existing.socket_event = socket_event
+            existing.started_at = datetime.now()
+            existing.ended_at = None
+            session.commit()
+            session.refresh(existing)
+            return share_session_to_dict(existing)
+
+        row = ShareSession(
+            owner_user_id=owner_user_id,
+            owner_username=owner_username,
+            camera_id=camera_id,
+            label=label,
+            socket_event=socket_event,
+            is_shared=True,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return share_session_to_dict(row)
+    except Exception as e:
+        session.rollback()
+        LOGGER.error("Failed to create share session: %s", e)
+        return None
+    finally:
+        session.close()
+
+
+def stop_share_session(
+    *,
+    socket_event: Optional[str] = None,
+    owner_username: Optional[str] = None,
+    camera_id: Optional[int] = None,
+) -> bool:
+    session = get_session()
+    try:
+        query = session.query(ShareSession).filter(ShareSession.is_shared == True)
+        if socket_event:
+            query = query.filter(ShareSession.socket_event == socket_event)
+        if owner_username:
+            query = query.filter(ShareSession.owner_username == owner_username)
+        if camera_id is not None:
+            query = query.filter(ShareSession.camera_id == camera_id)
+        row = query.first()
+        if row is None:
+            return False
+        row.is_shared = False
+        row.ended_at = datetime.now()
+        session.commit()
+        return True
+    except Exception as e:
+        session.rollback()
+        LOGGER.error("Failed to stop share session: %s", e)
+        return False
+    finally:
+        session.close()
+
+
+def get_share_session(socket_event: str) -> Optional[dict[str, Any]]:
+    session = get_session()
+    try:
+        row = (
+            session.query(ShareSession)
+            .filter(ShareSession.socket_event == socket_event)
+            .first()
+        )
+        if row is None:
+            return None
+        return share_session_to_dict(row)
+    finally:
+        session.close()
+
+
+def list_active_share_sessions() -> list[dict[str, Any]]:
+    session = get_session()
+    try:
+        rows = (
+            session.query(ShareSession)
+            .filter(ShareSession.is_shared == True)
+            .order_by(ShareSession.started_at.desc())
+            .all()
+        )
+        return [share_session_to_dict(row) for row in rows]
     finally:
         session.close()

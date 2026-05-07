@@ -1,80 +1,86 @@
-# Vision — OCR + YOLOv8 License Plate Detection
+# Vision - OCR + YOLOv8 License Plate Detection
 
-A PyQt6-based desktop application for real-time license plate detection using YOLOv8 and OCR via PaddleOCR.
+ANPR Command Center runs directly on the host machine. Docker is only kept as an optional PostgreSQL service.
 
 ## Features
 
-- **Camera Management** — Connect to multiple camera feeds, scan and add cameras to a grid
-- **License Plate Detection** — YOLOv8-based detection with bounding box overlay
-- **OCR** — PaddleOCR integration for extracting plate text (via Awiros backend)
-- **Live Log** — Real-time detection log with deduplication, watchlist matching, and alerts
-- **User Interface** — Modern light UI with professional card-based components and multi-threaded video overlay
-- **Role-Based Access Control** — Secure user authentication with SQLite database
+- **Camera Management** - Connect to multiple camera feeds, scan and add cameras to a grid
+- **License Plate Detection** - YOLOv8-based detection with bounding box overlay
+- **OCR** - PaddleOCR integration for extracting plate text via the bundled Awiros pipeline
+- **Live Log** - Real-time detection log with deduplication, watchlist matching, and alerts
+- **User Interface** - Browser-based SPA with real-time canvas feed, detection controls, and live share sessions
+- **Role-Based Access Control** - Secure user authentication with PostgreSQL-backed storage
 
 ## Tech Stack
 
-- **PyQt6** — GUI framework
-- **OpenCV** — Camera capture, proxy-resolution inference, image processing
-- **ultralytics** — YOLOv8 detection model (`keremberke/yolov8n-license-plate-detection`)
-- **PaddleOCR** — Deep learning framework for OCR
-- **SQLAlchemy** — Database ORM for user management and watchlist system
+- **FastAPI** - Local backend API and websocket server
+- **Vanilla JS SPA** - Browser frontend served by FastAPI
+- **OpenCV** - Camera capture, proxy-resolution inference, image processing
+- **ultralytics** - YOLOv8 detection model (`keremberke/yolov8n-license-plate-detection`)
+- **PaddleOCR** - OCR framework
+- **SQLAlchemy** - Database ORM
+- **PostgreSQL** - Persistent application storage
 
 ## Folder Structure
 
-```
+```text
 ANPR_New-GUI/
-├── main.py                 # Application entry point
-├── requirements.txt        # Python dependencies
-├── app/
-│   ├── __init__.py
-│   ├── camera/             # Camera management and background capture thread
-│   ├── detection/          # YOLOv8 + PaddleOCR processing and overlay rendering
-│   ├── services/           # Application state and runtime services
-│   ├── storage/            # SQLite database, auth session, storage path config
-│   ├── ui/                 # Main window, pages, login, dark/light theme styles
-│   └── utils/              # Log panel and helper components
+|-- run_server.py
+|-- run.bat
+|-- requirements.txt
+|-- requirements-gpu.txt
+|-- docker-compose.yml
+`-- app/
+    |-- detection/
+    |-- server/
+    |-- services/
+    |-- storage/
+    `-- web/
 ```
 
 ## Requirements
 
 - Python 3.9+
+- PostgreSQL on `localhost:5432`
 
-### Setup Dependencies
+## Setup
 
-1. **Install python packages**:
+1. Install Python packages:
    ```bash
    pip install -r requirements.txt
    ```
 
-   For an NVIDIA GPU setup, install the CUDA profile instead:
+   For NVIDIA GPU systems:
    ```bash
    pip install -r requirements-gpu.txt
    ```
 
-2. **PaddleOCR Module**:
-   The `ppocr` module is already vendored directly into the `app/detection` folder, making the repository completely self-contained. No external cloning is required.
+2. Start PostgreSQL.
 
-## Usage
+   If you want Docker only for the database:
+   ```bash
+   docker compose up -d postgres
+   ```
 
-```bash
-python main.py
-```
+3. Review `.env`.
 
-## Navigation
+   The repo now targets a host-local database connection:
+   ```env
+   DATABASE_URL=postgresql://anpr:anpr@localhost:5432/anpr
+   ```
 
-| Page | Description |
-|------|-------------|
-| Dashboard | System overview, active alerts, quick metrics |
-| Cameras | Add, edit or remove camera feeds |
-| Live Feed | Multi-threaded live YOLOv8 + OCR inference on active cameras |
-| Watchlist | Threat-level management mapped to SQLite database |
-| History | Past detection logs and records |
-| Settings | System configuration (confidence threshold, proxy-resolution, storage) |
-| About | Information about the software |
+4. Start the backend:
+   ```bash
+   python run_server.py
+   ```
 
-## Configuration
+   On Windows you can also use:
+   ```bash
+   run.bat
+   ```
 
-- **Detection Confidence Threshold**: Configurable via the Settings UI (default typically `0.4`)
-- **Proxy-Resolution Inference**: Downsamples frames for detection to improve FPS. Configurable in Settings.
-- **Model used**: `keremberke/yolov8n-license-plate-detection`
-- **OCR Engine**: Propelled by PaddlePaddle backend using Awiros configs.
+## Notes
+
+- The app itself is no longer containerized.
+- `docker-compose.yml` exists only to provide PostgreSQL storage.
+- The bundled `ppocr` module in `app/detection` keeps the OCR pipeline self-contained.

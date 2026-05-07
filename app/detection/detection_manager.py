@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import secrets
 from threading import Lock
 from typing import Any, Optional
 
@@ -16,6 +17,11 @@ from app.detection.legacy_backend import (
 )
 from app.detection.plate_pipeline import DetectedBox, PlatePipeline, PlateResult
 from app.services.app_runtime import load_ui_settings
+from app.storage.database import (
+    create_share_session,
+    list_active_share_sessions,
+    stop_share_session,
+)
 
 LOGGER = logging.getLogger("anpr_new_gui.detection.manager")
 
@@ -36,6 +42,8 @@ class DetectionManager:
         self._client_cameras: dict[str, set[int]] = {}
         # camera_id → bool (sharing enabled)
         self._shared_cameras: set[int] = set()
+        self._share_events: dict[int, str] = {}
+        self._share_owners: dict[int, str] = {}
 
         self._lock = Lock()
         self._running = False
@@ -94,10 +102,17 @@ class DetectionManager:
         """Clean up when a WebSocket connection drops."""
         with self._lock:
             cam_ids = list(self._client_cameras.pop(conn_id, set()))
+            shared_cam_ids = [
+                camera_id
+                for camera_id, owner_conn_id in self._share_owners.items()
+                if owner_conn_id == conn_id
+            ]
         for cam_id in cam_ids:
             self._stop_pipeline(cam_id)
             with self._lock:
                 self._owners.pop(cam_id, None)
+        for cam_id in shared_cam_ids:
+            self.stop_share_session(camera_id=cam_id, conn_id=conn_id)
         if cam_ids:
             LOGGER.info("Cleaned up %d camera(s) for disconnected client %s", len(cam_ids), conn_id)
 
@@ -160,6 +175,54 @@ class DetectionManager:
         with self._lock:
             return camera_id in self._shared_cameras
 
+    def get_share_event(self, camera_id: int) -> Optional[str]:
+        with self._lock:
+            return self._share_events.get(camera_id)
+
+    def start_share_session(
+        self,
+        *,
+        camera_id: int,
+        label: str,
+        conn_id: str,
+        owner_username: str,
+        owner_user_id: Optional[int],
+    ) -> Optional[dict[str, Any]]:
+        socket_event = f"share_{secrets.token_urlsafe(12)}"
+        row = create_share_session(
+            owner_user_id=owner_user_id,
+            owner_username=owner_username,
+            camera_id=camera_id,
+            label=label,
+            socket_event=socket_event,
+        )
+        if row is None:
+            return None
+        with self._lock:
+            self._shared_cameras.add(camera_id)
+            self._share_events[camera_id] = socket_event
+            self._share_owners[camera_id] = conn_id
+        return row
+
+    def stop_share_session(self, *, camera_id: int, conn_id: str) -> bool:
+        with self._lock:
+            owner = self._share_owners.get(camera_id)
+            socket_event = self._share_events.get(camera_id)
+        if owner is not None and owner != conn_id:
+            return False
+        if socket_event is None:
+            return False
+        stopped = stop_share_session(socket_event=socket_event)
+        if stopped:
+            with self._lock:
+                self._shared_cameras.discard(camera_id)
+                self._share_events.pop(camera_id, None)
+                self._share_owners.pop(camera_id, None)
+        return stopped
+
+    def list_active_share_sessions(self) -> list[dict[str, Any]]:
+        return list_active_share_sessions()
+
     # ── Internal pipeline management ────────────────────────────────────────
     def _start_pipeline(self, camera_id: int, confidence: float, label: str, conn_id: str) -> None:
         with self._lock:
@@ -182,7 +245,6 @@ class DetectionManager:
     def _stop_pipeline(self, camera_id: int) -> None:
         with self._lock:
             pipeline = self._pipelines.pop(camera_id, None)
-            self._shared_cameras.discard(camera_id)
         if pipeline:
             pipeline.stop()
         self._camera_status[camera_id] = "Stopped"

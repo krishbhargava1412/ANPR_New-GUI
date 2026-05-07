@@ -5,6 +5,7 @@ env/
 
 # Python cache / build artifacts
 __pycache__/
+.codex_pycache/
 *.py[cod]
 *.pyo
 *.pyd

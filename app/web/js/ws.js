@@ -3,16 +3,7 @@ const WS = (() => {
     let socket = null;
     let reconnectTimer = null;
     const listeners = {};
-
-    let frameCounters = {};
-    setInterval(() => {
-        Object.keys(frameCounters).forEach(camId => {
-            if (frameCounters[camId] > 0) {
-                console.log(`[WS] Camera ${camId} is sending frames to frontend (${frameCounters[camId]} fps)`);
-                frameCounters[camId] = 0;
-            }
-        });
-    }, 1000);
+    const decoder = new TextDecoder();
 
     function connect() {
         const token = API.getToken();
@@ -28,21 +19,20 @@ const WS = (() => {
             console.error('Invalid backend URL', e);
             return;
         }
-        
-        const url = urlObj.toString();
 
-        try { if (socket) socket.close(); } catch (e) {}
-        socket = new WebSocket(url);
+        try {
+            if (socket) socket.close();
+        } catch (e) {}
+
+        socket = new WebSocket(urlObj.toString());
         socket.binaryType = 'arraybuffer';
 
         socket.onopen = () => {
-            console.log('[WS] Connected');
             emit('connected');
             clearTimeout(reconnectTimer);
         };
 
         socket.onclose = () => {
-            console.log('[WS] Disconnected');
             emit('disconnected');
             scheduleReconnect();
         };
@@ -54,17 +44,13 @@ const WS = (() => {
         socket.onmessage = (event) => {
             if (event.data instanceof ArrayBuffer) {
                 const buf = event.data;
+                if (buf.byteLength < 2) return;
                 const view = new DataView(buf);
-                const cameraId = view.getUint32(0);
-                const jpegBlob = new Blob([buf.slice(4)], { type: 'image/jpeg' });
-                
-                if (frameCounters[cameraId] === undefined || frameCounters[cameraId] === 0) {
-                    console.log(`[WS] First binary frame received for Cam ${cameraId}, size: ${jpegBlob.size} bytes`);
-                }
-                
-                frameCounters[cameraId] = (frameCounters[cameraId] || 0) + 1;
-                
-                emit('frame', { cameraId, blob: jpegBlob });
+                const eventLen = view.getUint16(0, false);
+                if (buf.byteLength < 2 + eventLen) return;
+                const socketEvent = decoder.decode(buf.slice(2, 2 + eventLen));
+                const jpegBlob = new Blob([buf.slice(2 + eventLen)], { type: 'image/jpeg' });
+                emit('shared_frame', { socketEvent, blob: jpegBlob });
                 return;
             }
             try {
@@ -83,23 +69,45 @@ const WS = (() => {
 
     function disconnect() {
         clearTimeout(reconnectTimer);
-        if (socket) { socket.close(); socket = null; }
+        if (socket) {
+            socket.close();
+            socket = null;
+        }
     }
 
     function send(data) {
         if (socket?.readyState === WebSocket.OPEN) {
+            console.log('[WS][SEND][JSON]', data.type || 'message', data);
             socket.send(JSON.stringify(data));
+        } else {
+            console.warn('[WS][SEND][JSON][SKIP] Socket not open', data.type || 'message', data);
         }
     }
 
     function sendBinary(data) {
         if (socket?.readyState === WebSocket.OPEN) {
+            console.log('[WS][SEND][BINARY] bytes=', data.byteLength);
             socket.send(data);
+        } else {
+            console.warn('[WS][SEND][BINARY][SKIP] Socket not open');
         }
     }
 
-    function subscribe(cameraId) { send({ type: 'subscribe_camera', camera_id: cameraId }); }
-    function unsubscribe(cameraId) { send({ type: 'unsubscribe_camera', camera_id: cameraId }); }
+    function subscribe(cameraId) {
+        send({ type: 'subscribe_camera', camera_id: cameraId });
+    }
+
+    function unsubscribe(cameraId) {
+        send({ type: 'unsubscribe_camera', camera_id: cameraId });
+    }
+
+    function subscribeShare(socketEvent) {
+        send({ type: 'subscribe_share', socket_event: socketEvent });
+    }
+
+    function unsubscribeShare(socketEvent) {
+        send({ type: 'unsubscribe_share', socket_event: socketEvent });
+    }
 
     function on(event, callback) {
         if (!listeners[event]) listeners[event] = [];
@@ -108,14 +116,29 @@ const WS = (() => {
 
     function off(event, callback) {
         if (!listeners[event]) return;
-        listeners[event] = listeners[event].filter(cb => cb !== callback);
+        listeners[event] = listeners[event].filter((cb) => cb !== callback);
     }
 
     function emit(event, data) {
-        (listeners[event] || []).forEach(cb => {
-            try { cb(data); } catch (e) { console.error('[WS] Listener error', e); }
+        (listeners[event] || []).forEach((cb) => {
+            try {
+                cb(data);
+            } catch (e) {
+                console.error('[WS] Listener error', e);
+            }
         });
     }
 
-    return { connect, disconnect, send, sendBinary, subscribe, unsubscribe, on, off };
+    return {
+        connect,
+        disconnect,
+        send,
+        sendBinary,
+        subscribe,
+        unsubscribe,
+        subscribeShare,
+        unsubscribeShare,
+        on,
+        off,
+    };
 })();
