@@ -64,6 +64,17 @@ def load_ui_settings() -> dict[str, Any]:
 
 
 def save_ui_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    model_name = settings.get("model_name")
+    if model_name is not None:
+        model_name = str(model_name).strip()
+        available_models = set(available_model_names())
+        settings = settings.copy()
+        settings["model_name"] = (
+            model_name
+            if model_name in available_models
+            else DEFAULT_UI_SETTINGS["model_name"]
+        )
+
     merged = DEFAULT_UI_SETTINGS.copy()
     merged.update(settings)
     set_settings("ui", merged)

@@ -143,6 +143,11 @@ class PlatePipeline(Thread):
                 self._emit_status(f"Pipeline error: {exc}")
 
     def _process_frame(self, frame: np.ndarray, camera_index: int, source_label: str):
+        current_model = get_plate_model()
+        if current_model is not self._model:
+            self._model = current_model
+            self._emit_status(f"Detection ready | model: {loaded_model_path()}")
+
         started = time.perf_counter()
         detections = detect_plates_in_frame(
             self._model,

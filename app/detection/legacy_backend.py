@@ -108,6 +108,7 @@ VALID_STATE_CODES = {
 
 _reader = None
 _model = None
+_model_path: Path | None = None
 _reader_lock = Lock()
 _model_lock = Lock()
 _watchlist_cache: set[str] = set()
@@ -443,12 +444,12 @@ class AwirosAnprProcessProxy:
 atexit.register(_shutdown_ocr_process)
 
 
-def load_plate_model():
+def load_plate_model(model_path: Path | None = None):
     from ultralytics import YOLO
     import torch
 
     _allowlist_ultralytics_model_classes()
-    model_path = resolve_plate_model_path()
+    model_path = model_path or resolve_plate_model_path()
     original_torch_load = torch.load
     device = _get_safe_device()
 
@@ -470,13 +471,20 @@ def load_plate_model():
 
 def get_plate_model():
     global _model
+    global _model_path
+
+    desired_model_path = resolve_plate_model_path()
     with _model_lock:
-        if _model is None:
-            _model = load_plate_model()
+        if _model is None or _model_path != desired_model_path:
+            _model = load_plate_model(desired_model_path)
+            _model_path = desired_model_path
         return _model
 
 
 def loaded_model_path() -> str:
+    with _model_lock:
+        if _model_path is not None:
+            return str(_model_path)
     return str(resolve_plate_model_path())
 
 
