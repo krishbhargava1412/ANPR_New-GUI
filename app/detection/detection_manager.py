@@ -84,6 +84,9 @@ class DetectionManager:
         LOGGER.info("Detection started for camera %d (client: %s)", camera_id, conn_id)
 
     def stop_client_camera(self, camera_id: int, conn_id: str) -> None:
+        with self._lock:
+            if self._owners.get(camera_id) != conn_id:
+                return
         self._stop_pipeline(camera_id)
         with self._lock:
             self._owners.pop(camera_id, None)
@@ -93,6 +96,8 @@ class DetectionManager:
 
     def pause_client_camera(self, camera_id: int, conn_id: str) -> None:
         with self._lock:
+            if self._owners.get(camera_id) != conn_id:
+                return
             pipeline = self._pipelines.get(camera_id)
         if pipeline:
             self._paused = not self._paused
@@ -122,6 +127,8 @@ class DetectionManager:
     ) -> None:
         """Receive a decoded frame from the JS frontend and send to pipeline."""
         with self._lock:
+            if self._owners.get(camera_id) != conn_id:
+                return
             pipeline = self._pipelines.get(camera_id)
         if pipeline is None:
             return
@@ -188,6 +195,9 @@ class DetectionManager:
         owner_username: str,
         owner_user_id: Optional[int],
     ) -> Optional[dict[str, Any]]:
+        with self._lock:
+            if self._owners.get(camera_id) != conn_id:
+                return None
         socket_event = f"share_{secrets.token_urlsafe(12)}"
         row = create_share_session(
             owner_user_id=owner_user_id,
