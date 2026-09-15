@@ -62,7 +62,7 @@ ANPR_New-GUI/
    docker compose up -d postgres
    ```
 
-3. Review `.env`.
+3. Copy `.env.example` to `.env` and review it.
 
    The repo now targets a host-local database connection:
    ```env
