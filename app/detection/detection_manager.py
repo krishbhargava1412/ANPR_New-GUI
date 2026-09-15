@@ -326,9 +326,8 @@ class DetectionManager:
     def _broadcast_json_async(self, data: dict) -> None:
         try:
             from app.server.websocket_manager import manager
-            if self._ws_loop and not self._ws_loop.is_closed():
                 asyncio.run_coroutine_threadsafe(
-                    manager.broadcast_json(data),
+                    manager.broadcast_json(data, camera_id=data.get("camera_id")),
                     self._ws_loop,
                 )
         except Exception:
